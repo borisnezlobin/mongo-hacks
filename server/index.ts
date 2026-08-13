@@ -1,3 +1,5 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
@@ -7,6 +9,19 @@ import { registerAudioRoutes } from './audio';
 import { registerIdentityRoutes } from './identity';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
+
+/** True when this file is the process entry, including `tsx index.ts` / `tsx watch index.ts`. */
+export function isDirectRun(argv: readonly string[] = process.argv, moduleUrl = import.meta.url): boolean {
+  const thisFile = fileURLToPath(moduleUrl);
+  const thisDir = dirname(thisFile);
+  return argv.slice(1).some((arg) => {
+    try {
+      return resolve(arg) === thisFile || resolve(thisDir, arg) === thisFile;
+    } catch {
+      return false;
+    }
+  });
+}
 
 export function createApp() {
   const app = new Hono();
@@ -58,4 +73,4 @@ export function startServer(port = Number(process.env.PORT ?? 3000)) {
   });
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) startServer();
+if (isDirectRun()) startServer();
