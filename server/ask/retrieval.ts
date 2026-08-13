@@ -1,168 +1,180 @@
-import { OWNER_ID } from '../../shared/contracts';
-import type { Fact, Id, SearchMemoryResult } from '../../shared/contracts';
+import type { Id, SearchMemoryResult } from '../../shared/contracts';
 import { collections } from '../memory/db';
-import { embedQuery } from '../memory/embeddings';
-
-const CANDIDATES = 100;
-const LIMIT = 10;
-/** Reciprocal-rank-fusion constant; 60 is the value $rankFusion itself defaults to. */
-const RRF_K = 60;
+import { embedQueries } from '../memory/embeddings';
+import { extractStructured } from '../memory/llm';
+import { hybridFactSearch, scanPromisesAndUtterances } from './candidates';
+import { retrievalConfig, type RetrievalConfig } from './config';
+import { capPerAttribute, fuseCandidates, type RankedList } from './fusion';
+import { planQuery, type QueryPlan } from './query-plan';
+import { rerankCandidates } from './rerank';
+import { toSearchResult, type Candidate, type Filter, type RetrievalDeps } from './types';
 
 /**
- * `$rankFusion` is a recent aggregation stage. Where the sandbox cluster is too
- * old for it we run the same two pipelines and fuse the ranks by hand, so the
- * retrieval quality of the demo does not depend on the cluster version.
+ * How much each formulation of the question is trusted in the cross-query fusion.
+ * The asker's own words win ties; an invented hypothetical answer and a
+ * paraphrase are useful for recall but are the pipeline's guesses, not theirs.
  */
-export const useRankFusion = (): boolean => process.env.ASK_RRF_FALLBACK !== '1';
+const WEIGHT = { original: 1, hypothetical: 0.9, variant: 0.7, scan: 0.5 } as const;
 
-function factFilter(personId?: Id) {
+export interface RetrievalOptions {
+  deps?: RetrievalDeps;
+  config?: Partial<RetrievalConfig>;
+}
+
+/** Kept for callers that only need to know which fusion path the cluster supports. */
+export const useRankFusion = (): boolean => retrievalConfig().rankFusion;
+
+function defaultDeps(): RetrievalDeps {
   return {
-    owner_id: OWNER_ID,
-    ...(personId ? { person_id: personId } : {}),
-    superseded_by: { $in: [null, undefined] },
-  };
-}
-
-function toResult(fact: Fact, score: number): SearchMemoryResult {
-  return {
-    kind: 'fact',
-    id: fact._id,
-    person_id: fact.person_id,
-    text: fact.claim,
-    score,
-    source_utterance_id: fact.primary_source_utterance_id,
-  };
-}
-
-function vectorStage(embedding: number[], personId?: Id) {
-  return {
-    $vectorSearch: {
-      index: 'facts_vector',
-      path: 'embedding',
-      queryVector: embedding,
-      numCandidates: CANDIDATES,
-      limit: LIMIT,
-      filter: { owner_id: OWNER_ID, ...(personId ? { person_id: personId } : {}) },
-    },
-  };
-}
-
-function lexicalStage(query: string, personId?: Id) {
-  const must: Record<string, unknown>[] = [
-    { text: { query, path: ['claim', 'attribute'] } },
-    { equals: { path: 'owner_id', value: OWNER_ID } },
-  ];
-  if (personId) must.push({ equals: { path: 'person_id', value: personId } });
-  return { $search: { index: 'facts_text', compound: { must } } };
-}
-
-async function rankFusionSearch(query: string, embedding: number[], personId?: Id): Promise<SearchMemoryResult[]> {
-  const pipeline = [
-    {
-      $rankFusion: {
-        input: {
-          pipelines: {
-            semantic: [vectorStage(embedding, personId)],
-            lexical: [lexicalStage(query, personId), { $limit: LIMIT }],
-          },
-        },
-        scoreDetails: false,
+    collections: {
+      facts: { aggregate: (pipeline) => collections.facts().aggregate(pipeline) },
+      promises: {
+        find: (filter: Filter) =>
+          collections.promises().find(filter as Parameters<ReturnType<typeof collections.promises>['find']>[0]),
+      },
+      utterances: {
+        find: (filter: Filter) =>
+          collections.utterances().find(filter as Parameters<ReturnType<typeof collections.utterances>['find']>[0]),
       },
     },
-    { $match: { superseded_by: { $in: [null, undefined] } } },
-    { $limit: LIMIT },
-    { $addFields: { fusion_score: { $meta: 'score' } } },
-  ];
-  const docs = await collections.facts().aggregate<Fact & { fusion_score?: number }>(pipeline).toArray();
-  return docs.map((doc) => toResult(doc, doc.fusion_score ?? 0));
+    embedQueries,
+    complete: extractStructured,
+  };
 }
 
-async function manualRrfSearch(query: string, embedding: number[], personId?: Id): Promise<SearchMemoryResult[]> {
-  const [semantic, lexical] = await Promise.all([
-    collections
-      .facts()
-      .aggregate<Fact>([vectorStage(embedding, personId), { $match: factFilter(personId) }, { $limit: LIMIT }])
-      .toArray(),
-    collections
-      .facts()
-      .aggregate<Fact>([lexicalStage(query, personId), { $match: factFilter(personId) }, { $limit: LIMIT }])
-      .toArray()
-      // A cluster without the Search index still answers via the semantic leg.
-      .catch(() => [] as Fact[]),
+/** Losing one leg should cost that leg's recall, not the whole answer. */
+async function tolerate(label: string, work: Promise<Candidate[]>): Promise<Candidate[]> {
+  try {
+    return await work;
+  } catch (error) {
+    console.warn(`retrieval leg "${label}" failed:`, (error as Error).message);
+    return [];
+  }
+}
+
+/** The formulations to embed, in the order their weights are assigned below. */
+function formulations(plan: QueryPlan): Array<{ text: string; weight: number }> {
+  return [
+    ...(plan.hypothetical ? [{ text: plan.hypothetical, weight: WEIGHT.hypothetical }] : []),
+    ...plan.variants.map((text) => ({ text, weight: WEIGHT.variant })),
+  ];
+}
+
+/**
+ * Stages 2 and 3: fan the plan out over the hybrid fact index and fuse the
+ * rankings back together. The original question is searched first and in
+ * parallel with planning, so stage 1's latency is mostly hidden behind a leg
+ * that would have run anyway.
+ */
+async function recallFacts(
+  plan: QueryPlan,
+  baseline: Candidate[],
+  deps: RetrievalDeps,
+  config: RetrievalConfig,
+  personId?: Id,
+): Promise<RankedList[]> {
+  const extra = formulations(plan);
+  if (extra.length === 0) return [{ weight: WEIGHT.original, items: baseline }];
+
+  let embeddings: number[][] = [];
+  try {
+    embeddings = await deps.embedQueries(extra.map((entry) => entry.text));
+  } catch (error) {
+    console.warn('embedding the expanded queries failed, using the original only:', (error as Error).message);
+    return [{ weight: WEIGHT.original, items: baseline }];
+  }
+
+  const expanded = await Promise.all(
+    extra.map((entry, index) => {
+      const embedding = embeddings[index];
+      if (!embedding) return Promise.resolve<Candidate[]>([]);
+      return tolerate(
+        `variant:${entry.text}`,
+        hybridFactSearch(deps, config, entry.text, embedding, personId),
+      );
+    }),
+  );
+
+  return [
+    { weight: WEIGHT.original, items: baseline },
+    ...expanded.map((items, index) => ({ weight: extra[index]!.weight, items })),
+  ];
+}
+
+async function baselineFacts(
+  query: string,
+  deps: RetrievalDeps,
+  config: RetrievalConfig,
+  personId?: Id,
+): Promise<Candidate[]> {
+  const [embedding] = await deps.embedQueries([query]);
+  if (!embedding) return [];
+  return hybridFactSearch(deps, config, query, embedding, personId);
+}
+
+async function run(
+  query: string,
+  personId: Id | undefined,
+  includeScan: boolean,
+  options: RetrievalOptions,
+): Promise<SearchMemoryResult[]> {
+  const config = retrievalConfig(options.config);
+  const deps = options.deps ?? defaultDeps();
+
+  // Stage 1 runs against the clock of a leg that does not depend on it.
+  const [baseline, plan] = await Promise.all([
+    tolerate('baseline', baselineFacts(query, deps, config, personId)),
+    planQuery(query, deps, config),
   ]);
 
-  const fused = new Map<Id, { fact: Fact; score: number }>();
-  for (const ranking of [semantic, lexical]) {
-    ranking.forEach((fact, index) => {
-      const entry = fused.get(fact._id) ?? { fact, score: 0 };
-      entry.score += 1 / (RRF_K + index + 1);
-      fused.set(fact._id, entry);
-    });
-  }
-  return [...fused.values()]
-    .sort((a, b) => b.score - a.score)
-    .slice(0, LIMIT)
-    .map((entry) => toResult(entry.fact, entry.score));
+  const [rankings, scanned] = await Promise.all([
+    recallFacts(plan, baseline, deps, config, personId),
+    includeScan
+      ? tolerate('scan', scanPromisesAndUtterances(deps, config, plan.keywords, personId))
+      : Promise.resolve<Candidate[]>([]),
+  ]);
+
+  const fused = fuseCandidates([...rankings, { weight: WEIGHT.scan, items: scanned }]);
+  if (fused.length === 0) return [];
+
+  // Stage 4 sees a wide pool and stage 5 trims it, so precision costs no recall.
+  const reranked = await rerankCandidates(query, fused.slice(0, config.rerankPool), deps, config);
+  return capPerAttribute(reranked, config.attributeCap)
+    .slice(0, config.limit)
+    .map(toSearchResult);
 }
 
 /** Only ever returns live facts: a superseded claim must never reach an answer. */
-export async function searchFacts(query: string, personId?: Id): Promise<SearchMemoryResult[]> {
-  const embedding = await embedQuery(query);
-  if (!useRankFusion()) return manualRrfSearch(query, embedding, personId);
-  try {
-    return await rankFusionSearch(query, embedding, personId);
-  } catch (error) {
-    console.warn('$rankFusion unavailable, falling back to hand-rolled RRF:', (error as Error).message);
-    return manualRrfSearch(query, embedding, personId);
-  }
+export function searchFacts(
+  query: string,
+  personId?: Id,
+  options: RetrievalOptions = {},
+): Promise<SearchMemoryResult[]> {
+  return run(query, personId, false, options);
+}
+
+export function searchPromisesAndUtterances(
+  query: string,
+  personId?: Id,
+  options: RetrievalOptions = {},
+): Promise<SearchMemoryResult[]> {
+  const config = retrievalConfig(options.config);
+  const deps = options.deps ?? defaultDeps();
+  return tolerate('scan', scanPromisesAndUtterances(deps, config, query.split(/\s+/), personId)).then(
+    (candidates) => candidates.map(toSearchResult),
+  );
 }
 
 /**
- * Promises and raw utterances are small enough at demo scale that a lexical scan
- * beats spending one of the three Atlas search-index slots on them.
+ * Five stages: plan the query, recall over every formulation, fuse the rankings,
+ * rerank the pool against the question, then trim for diversity. Each stage after
+ * recall is skippable, and a failure in any one of them degrades to the stage
+ * before it rather than to an error.
  */
-export async function searchPromisesAndUtterances(query: string, personId?: Id): Promise<SearchMemoryResult[]> {
-  const terms = query.split(/\s+/).filter((term) => term.length > 3);
-  if (terms.length === 0) return [];
-  const pattern = new RegExp(terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
-
-  const [promises, utterances] = await Promise.all([
-    collections
-      .promises()
-      .find({ owner_id: OWNER_ID, ...(personId ? { person_id: personId } : {}), text: pattern })
-      .limit(5)
-      .toArray(),
-    collections
-      .utterances()
-      .find({ owner_id: OWNER_ID, ...(personId ? { person_id: personId } : {}), text: pattern })
-      .limit(5)
-      .toArray(),
-  ]);
-
-  return [
-    ...promises.map((promise) => ({
-      kind: 'promise' as const,
-      id: promise._id,
-      person_id: promise.person_id,
-      text: promise.text,
-      score: 0.5,
-      source_utterance_id: promise.source_utterance_id,
-    })),
-    ...utterances.map((utterance) => ({
-      kind: 'utterance' as const,
-      id: utterance._id,
-      person_id: utterance.person_id,
-      text: utterance.text,
-      score: 0.25,
-      source_utterance_id: utterance._id,
-    })),
-  ];
-}
-
-export async function searchMemory(query: string, personId?: Id): Promise<SearchMemoryResult[]> {
-  const [facts, rest] = await Promise.all([
-    searchFacts(query, personId),
-    searchPromisesAndUtterances(query, personId),
-  ]);
-  return [...facts, ...rest];
+export function searchMemory(
+  query: string,
+  personId?: Id,
+  options: RetrievalOptions = {},
+): Promise<SearchMemoryResult[]> {
+  return run(query, personId, true, options);
 }

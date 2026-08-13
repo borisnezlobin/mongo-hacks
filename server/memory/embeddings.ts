@@ -43,3 +43,9 @@ export async function embedQuery(text: string): Promise<number[]> {
   const [embedding] = await embedBatch([text], 'query');
   return embedding;
 }
+
+/** Multi-query retrieval embeds several formulations of one question; one round trip serves them all. */
+export async function embedQueries(texts: string[]): Promise<number[][]> {
+  if (texts.length === 0) return [];
+  return embedBatch(texts, 'query');
+}
