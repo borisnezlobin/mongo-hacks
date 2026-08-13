@@ -27,6 +27,20 @@ describe('detectWake', () => {
     expect(detectWake(utterance('HEY, AMELIA -- what is up'), 0.9)?.command).toBe('what is up');
   });
 
+  // Regression: punctuation ABUTTING the wake phrase makes "Amelia—remind" a
+  // single whitespace token. Deriving offsets by splitting that token gave
+  // every sub-word the token's end, so the command lost its first word — an em
+  // dash straight off an STT silently ate the verb.
+  it.each([
+    ['Hey Amelia—remind me tonight to email Jerry', 'remind me tonight to email Jerry'],
+    ['Hey Amelia-remind me tonight', 'remind me tonight'],
+    ['Hey Amelia:remind me tonight', 'remind me tonight'],
+    ['Hey Amelia?where did Jerry go', 'where did Jerry go'],
+    ['Hey Amelia...where did Jerry go', 'where did Jerry go'],
+  ])('keeps the first command word in %j', (text, expected) => {
+    expect(detectWake(utterance(text), 0.95)?.command).toBe(expected);
+  });
+
   it('takes the command from a mid-turn wake phrase', () => {
     expect(detectWake(utterance('so anyway hey amelia remind me tonight'), 0.9)?.command).toBe(
       'remind me tonight',
