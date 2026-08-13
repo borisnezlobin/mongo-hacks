@@ -77,6 +77,17 @@ function Shell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Starting a recording is a request to watch it happen, so jump into the transcript
+  // as soon as the uplink is actually streaming.
+  const wasStreaming = useRef(false);
+  useEffect(() => {
+    const streaming = uplink.state === 'streaming';
+    if (streaming && !wasStreaming.current && navigation.route.name !== 'conversation') {
+      navigation.openConversation(liveConversationId);
+    }
+    wasStreaming.current = streaming;
+  }, [uplink.state, liveConversationId, navigation]);
+
   // Any open promise carrying a due date schedules itself; closing one takes it back.
   const scheduledRef = useRef(new Set<string>());
   useEffect(() => {

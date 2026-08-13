@@ -86,24 +86,16 @@ function StepLine({ message, faded }: { message: string; faded: boolean }) {
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg },
   mark: {
-    width: 34,
-    height: 34,
-    borderRadius: radii.pill,
+    width: 36,
+    height: 36,
+    borderRadius: 8,
     backgroundColor: colors.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
   column: { flex: 1, gap: spacing.xs },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  bubble: {
-    alignSelf: 'flex-start',
-    backgroundColor: colors.surface,
-    borderRadius: radii.bubble,
-    borderTopLeftRadius: 4,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    gap: 3,
-  },
+  bubble: { gap: 3 },
   reply: { marginTop: spacing.sm, gap: spacing.sm },
   spoken: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
 });
