@@ -5,7 +5,7 @@ import type { Id } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
 import { AmeliaMessage } from '../components/amelia-message';
 import { Chip } from '../components/ui';
-import { UtteranceBubble } from '../components/utterance-bubble';
+import { UtteranceRow } from '../components/utterance-row';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { formatDay } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
@@ -107,11 +107,10 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
           const previous = utterances[index - 1];
           const showHeader = !previous || previous.person_id !== utterance.person_id;
           return (
-            <UtteranceBubble
+            <UtteranceRow
               key={utterance._id}
               utterance={utterance}
               person={person}
-              isOwner={utterance.person_id === OWNER_PERSON_ID}
               showHeader={showHeader}
               onPressPerson={() => person && navigation.openPerson(person._id)}
               onName={person ? () => onNamePerson(person) : undefined}
