@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { DEMO_PEOPLE, demoConversation, demoParticipantIds } from './seed.mjs';
+import { DEMO_PEOPLE, demoConversation, demoParticipantIds, ownerVoiceprintEmbedding } from './seed.mjs';
 import transcript from './transcript.json';
 
 describe('demo fixtures', () => {
@@ -34,5 +34,12 @@ describe('demo fixtures', () => {
     expect(wav.readUInt16LE(22)).toBe(1);
     expect(wav.readUInt32LE(24)).toBe(16_000);
     expect(wav.readUInt16LE(34)).toBe(16);
+  });
+
+  it('seeds a unit-length owner vector compatible with cosine thresholds', () => {
+    const embedding = ownerVoiceprintEmbedding();
+    const norm = Math.sqrt(embedding.reduce((sum, component) => sum + component ** 2, 0));
+    expect(embedding).toHaveLength(192);
+    expect(norm).toBeCloseTo(1, 10);
   });
 });

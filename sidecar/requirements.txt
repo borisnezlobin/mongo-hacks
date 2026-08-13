@@ -1,0 +1,7 @@
+torch
+torchaudio
+speechbrain
+fastapi
+uvicorn
+numpy
+soundfile

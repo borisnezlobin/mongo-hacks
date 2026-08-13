@@ -106,6 +106,28 @@ manual route is the only way in.
 - **Email is draft-only.** `sendDraft` is deliberately not a tool. Recipient
   addresses come from memory, never from the model.
 
+## Model provider
+
+The loop is provider-neutral. `provider.ts` defines a normalized surface and
+each backend translates to its own wire format:
+
+| `AMELIA_PROVIDER` | Model | API |
+| --- | --- | --- |
+| `anthropic` | `claude-opus-5` | Messages API — `tool_use` / `tool_result` blocks |
+| `fireworks` | `FIREWORKS_MODEL` (default `kimi-k3`) | OpenAI-compatible — `tool_calls` / `role:"tool"` |
+
+Unset auto-selects: Anthropic when `ANTHROPIC_API_KEY` is present, otherwise
+Fireworks. **These are different model families, not one model behind two
+URLs** — Fireworks serves open weights, and it has no thinking/effort surface,
+so `AMELIA_EFFORT` applies to Anthropic only. Fireworks *does* accept
+`temperature`, which the loop pins to 0.
+
+Currently running on Fireworks because the team's shared `ANTHROPIC_API_KEY` is
+blank. Flipping back is one env var — no code change.
+
+**Verified working end to end on `kimi-k3`:** all 8 canonical checks pass,
+including the conditional branch on a superseded fact.
+
 ## Model parameters — do not "fix" these
 
 - **No `temperature`.** Sampling parameters are removed on Opus 5 and return a
