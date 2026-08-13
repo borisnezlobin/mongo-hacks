@@ -25,27 +25,27 @@ describe('applyJudgements', () => {
   const pool = [candidate('top', 0.9), candidate('middle', 0.5), candidate('bottom', 0.1)];
 
   it('lets the judgement override recall order', () => {
-    const ranked = applyJudgements(pool, new Map([[0, 1], [1, 1], [2, 3]]));
+    const ranked = applyJudgements(pool, new Map([['top', 1], ['middle', 1], ['bottom', 3]]));
     expect(ranked.map((entry) => entry.id)).toEqual(['bottom', 'top', 'middle']);
   });
 
   it('breaks ties on recall order', () => {
-    const ranked = applyJudgements(pool, new Map([[0, 2], [1, 2], [2, 2]]));
+    const ranked = applyJudgements(pool, new Map([['top', 2], ['middle', 2], ['bottom', 2]]));
     expect(ranked.map((entry) => entry.id)).toEqual(['top', 'middle', 'bottom']);
   });
 
   it('drops items judged irrelevant', () => {
-    const ranked = applyJudgements(pool, new Map([[0, 0], [1, 3], [2, 0]]));
+    const ranked = applyJudgements(pool, new Map([['top', 0], ['middle', 3], ['bottom', 0]]));
     expect(ranked.map((entry) => entry.id)).toEqual(['middle']);
   });
 
   it('treats an unjudged item as weakly relevant rather than rejected', () => {
-    const ranked = applyJudgements(pool, new Map([[0, 3]]));
+    const ranked = applyJudgements(pool, new Map([['top', 3]]));
     expect(ranked.map((entry) => entry.id)).toEqual(['top', 'middle', 'bottom']);
   });
 
   it('reports scores on a 0..1 scale', () => {
-    const ranked = applyJudgements(pool, new Map([[0, 3], [1, 3], [2, 3]]));
+    const ranked = applyJudgements(pool, new Map([['top', 3], ['middle', 3], ['bottom', 3]]));
     expect(ranked[0]!.score).toBeCloseTo(1);
     expect(ranked.every((entry) => entry.score >= 0 && entry.score <= 1)).toBe(true);
   });

@@ -7,6 +7,13 @@ export interface ExtractionRequest {
   /** JSON Schema the reply is constrained to; objects need `additionalProperties: false`. */
   schema: Record<string, unknown>;
   maxTokens?: number;
+  /**
+   * gpt-oss thinks before it answers, and the thinking dominates wall clock:
+   * the same call measured 735 ms at `low` and 2,354 ms at `high`. Extraction
+   * leaves this unset and keeps the model's default; retrieval, which is on the
+   * interactive path and asks much smaller questions, sets `low`.
+   */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 interface ChatCompletion {
@@ -28,6 +35,7 @@ export async function extractStructured<T>(request: ExtractionRequest): Promise<
       max_tokens: request.maxTokens ?? 4_000,
       temperature: 0,
       response_format: { type: 'json_object', schema: request.schema },
+      ...(request.reasoningEffort ? { reasoning_effort: request.reasoningEffort } : {}),
       messages: [
         { role: 'system', content: request.system },
         { role: 'user', content: request.user },

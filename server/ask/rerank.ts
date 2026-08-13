@@ -1,13 +1,16 @@
+import type { Id } from '../../shared/contracts';
 import { todayIsoDate } from '../memory/normalize';
 import type { RetrievalConfig } from './config';
 import { normalizeScores } from './fusion';
 import type { Candidate, RetrievalDeps } from './types';
 
 const MAX_RELEVANCE = 3;
-/** An item the model never scored is treated as weakly relevant, not as rejected. */
+/** An item nobody scored is treated as weakly relevant, not as rejected. */
 const UNJUDGED = 1;
 /** Recall order still breaks ties, but the judgement dominates it. */
 const JUDGEMENT_WEIGHT = 0.75;
+
+export type Judgements = Map<Id, number>;
 
 const RERANK_SCHEMA = {
   type: 'object',
@@ -29,17 +32,21 @@ const RERANK_SCHEMA = {
   },
 } as const;
 
-const RERANK_SYSTEM = `You judge how well each retrieved memory item answers a question.
+/**
+ * Kept short on purpose: the asker is waiting on this call, and a longer rubric
+ * mostly buys reasoning tokens rather than better judgements.
+ *
+ * The scale is absolute — an item is scored against the question, not against
+ * the other items — which is what lets separate batches be judged independently
+ * and merged.
+ */
+const RERANK_SYSTEM = `Score each retrieved item against the question, by its own content.
 
-Score every item you are given:
-3 — answers the question directly.
-2 — is about the right person and subject and materially narrows the answer.
-1 — related background that a careful answer might mention.
-0 — retrieved by keyword or vector coincidence and does not bear on the question.
+3 answers it directly. 2 is the right person and subject and narrows the answer.
+1 is related background. 0 is a keyword or vector coincidence.
 
-Judge the item on its own content, not on the order it was given in. Retrieval is
-recall-oriented, so scoring several items 0 is expected and correct. Do not invent
-items and do not skip any.`;
+Retrieval is recall-oriented, so many 0s are expected. Score every item given, using
+the numbers shown in brackets. Answer immediately. Do not deliberate.`;
 
 function render(candidate: Candidate, index: number): string {
   const parts = [
@@ -53,42 +60,22 @@ function render(candidate: Candidate, index: number): string {
 }
 
 /**
- * Applies judgements the model actually returned; anything out of range or
- * missing falls back to `UNJUDGED` so a truncated reply degrades to recall order
- * instead of emptying the result set.
- */
-export function applyJudgements(candidates: Candidate[], judgements: Map<number, number>): Candidate[] {
-  const scored = normalizeScores(candidates).map((candidate, index) => {
-    const relevance = judgements.get(index) ?? UNJUDGED;
-    return {
-      candidate,
-      relevance,
-      blended:
-        JUDGEMENT_WEIGHT * (relevance / MAX_RELEVANCE) + (1 - JUDGEMENT_WEIGHT) * candidate.score,
-    };
-  });
-
-  return scored
-    .filter((entry) => entry.relevance > 0)
-    .sort((a, b) => b.blended - a.blended)
-    .map((entry) => ({ ...entry.candidate, score: entry.blended }));
-}
-
-/**
  * Stage 4. Fusion ranks on lexical overlap and vector proximity, neither of which
  * knows what the question is asking; a model reading the question against each
  * candidate does. Items are addressed by position because the model reproduces a
  * small integer reliably and a UUID it does not.
+ *
+ * The whole pool goes in one request. Splitting it across concurrent requests
+ * was measurably slower: the inference account serialises them, so a second
+ * request costs its full latency rather than overlapping.
  */
-export async function rerankCandidates(
+export async function judgeCandidates(
   query: string,
   candidates: Candidate[],
   deps: RetrievalDeps,
   config: RetrievalConfig,
-): Promise<Candidate[]> {
-  // A lone candidate is still worth judging: it is the case where an unrelated
-  // hit would otherwise become the one thing an answer could cite.
-  if (!config.rerank || candidates.length === 0) return normalizeScores(candidates);
+): Promise<Judgements> {
+  if (!config.rerank || candidates.length === 0) return new Map();
 
   try {
     const reply = await deps.complete<{ rankings: Array<{ item: number; relevance: number }> }>({
@@ -101,17 +88,54 @@ export async function rerankCandidates(
         candidates.map(render).join('\n\n'),
       ].join('\n'),
       schema: RERANK_SCHEMA,
-      maxTokens: 1_500,
+      // Roughly a dozen tokens per judgement, plus room for the model to think.
+      maxTokens: 300 + candidates.length * 40,
+      reasoningEffort: 'low',
     });
 
-    const judgements = new Map<number, number>();
+    const judgements: Judgements = new Map();
     for (const { item, relevance } of reply.rankings ?? []) {
-      if (!Number.isInteger(item) || item < 0 || item >= candidates.length) continue;
-      judgements.set(item, Math.min(Math.max(relevance, 0), MAX_RELEVANCE));
+      const candidate = candidates[item];
+      if (!Number.isInteger(item) || !candidate) continue;
+      judgements.set(candidate.id, Math.min(Math.max(relevance, 0), MAX_RELEVANCE));
     }
-    return applyJudgements(candidates, judgements);
+    return judgements;
   } catch (error) {
     console.warn('rerank failed, keeping fusion order:', (error as Error).message);
-    return normalizeScores(candidates);
+    // No judgements means every candidate is unjudged, which sorts back to
+    // fusion order and drops nothing.
+    return new Map();
   }
+}
+
+/**
+ * Applies whatever judgements exist. Anything missing falls back to `UNJUDGED`,
+ * so a truncated reply — or a reranker that never ran — degrades to recall order
+ * instead of emptying the result set.
+ */
+export function applyJudgements(candidates: Candidate[], judgements: Judgements): Candidate[] {
+  return normalizeScores(candidates)
+    .map((candidate) => {
+      const relevance = judgements.get(candidate.id) ?? UNJUDGED;
+      return {
+        candidate,
+        relevance,
+        blended:
+          JUDGEMENT_WEIGHT * (relevance / MAX_RELEVANCE) + (1 - JUDGEMENT_WEIGHT) * candidate.score,
+      };
+    })
+    .filter((entry) => entry.relevance > 0)
+    .sort((a, b) => b.blended - a.blended)
+    .map((entry) => ({ ...entry.candidate, score: entry.blended }));
+}
+
+/** Judge and apply in one step, for callers that already hold the final pool. */
+export async function rerankCandidates(
+  query: string,
+  candidates: Candidate[],
+  deps: RetrievalDeps,
+  config: RetrievalConfig,
+): Promise<Candidate[]> {
+  if (!config.rerank) return normalizeScores(candidates);
+  return applyJudgements(candidates, await judgeCandidates(query, candidates, deps, config));
 }
