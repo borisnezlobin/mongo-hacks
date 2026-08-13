@@ -14,7 +14,11 @@
  */
 
 import type { Hono } from 'hono';
-import { AppServer, type AppSession, StreamType } from '@mentra/sdk';
+// TYPE-ONLY: erased at compile time. @mentra/sdk declares a `development`
+// export condition pointing at ./src, which is not shipped, so any VALUE
+// import here would make `server/index.ts` unresolvable under Vite/vitest.
+// The real import is dynamic, inside startGlassesServer.
+import type { AppSession } from '@mentra/sdk';
 import type { AmeliaEvent, Id, ServerDependencies } from '../../shared/contracts';
 import { GlassesUplink } from './uplink';
 
@@ -28,50 +32,38 @@ interface ActiveGlasses {
 /** One entry per connected pair of glasses. */
 const active = new Map<string, ActiveGlasses>();
 
-class AmeliaGlassesServer extends AppServer {
-  constructor(
-    private readonly deps: ServerDependencies,
-    config: ConstructorParameters<typeof AppServer>[0],
-  ) {
-    super(config);
-  }
+/** Wires one glasses session to Lane A's ingest. Shared by the server class. */
+function attachSession(session: AppSession, sessionId: string, userId: string, audioChunk: string): void {
+  const conversationId: Id = `glasses-${sessionId}`;
+  const uplink = new GlassesUplink({
+    conversationId,
+    onError: (error) => console.error('[glasses] uplink error:', error.message),
+  });
+  uplink.connect();
 
-  protected override async onSession(
-    session: AppSession,
-    sessionId: string,
-    userId: string,
-  ): Promise<void> {
-    const conversationId: Id = `glasses-${sessionId}`;
-    const uplink = new GlassesUplink({
-      conversationId,
-      onError: (error) => console.error('[glasses] uplink error:', error.message),
-    });
-    uplink.connect();
+  const entry: ActiveGlasses = { session, uplink, conversationId, chunks: 0 };
+  active.set(sessionId, entry);
+  console.log(`[glasses] session ${sessionId} (user ${userId}) → conversation ${conversationId}`);
 
-    const entry: ActiveGlasses = { session, uplink, conversationId, chunks: 0 };
-    active.set(sessionId, entry);
-    console.log(`[glasses] session ${sessionId} (user ${userId}) → conversation ${conversationId}`);
+  session.subscribe(audioChunk as Parameters<AppSession['subscribe']>[0]);
 
-    session.subscribe(StreamType.AUDIO_CHUNK);
-
-    // Chunks arrive many times per second: keep this handler synchronous and
-    // cheap. Framing and the socket write happen in the uplink.
-    session.events.onAudioChunk((chunk) => {
-      entry.chunks++;
-      uplink.push(new Float32Array(chunk.arrayBuffer as ArrayBuffer), chunk.sampleRate ?? 16_000);
-    });
-  }
-
-  protected override async onStop(sessionId: string, _userId: string, reason: string): Promise<void> {
-    const entry = active.get(sessionId);
-    if (!entry) return;
-    console.log(`[glasses] session ${sessionId} ended (${reason}) after ${entry.chunks} chunks`);
-    entry.uplink.close();
-    active.delete(sessionId);
-  }
+  // Chunks arrive many times per second: keep this handler synchronous and
+  // cheap. Framing and the socket write happen in the uplink.
+  session.events.onAudioChunk((chunk) => {
+    entry.chunks++;
+    uplink.push(new Float32Array(chunk.arrayBuffer as ArrayBuffer), chunk.sampleRate ?? 16_000);
+  });
 }
 
-let server: AmeliaGlassesServer | null = null;
+function detachSession(sessionId: string, reason: string): void {
+  const entry = active.get(sessionId);
+  if (!entry) return;
+  console.log(`[glasses] session ${sessionId} ended (${reason}) after ${entry.chunks} chunks`);
+  entry.uplink.close();
+  active.delete(sessionId);
+}
+
+let server: { stop(): Promise<void> } | null = null;
 let unsubscribe: (() => void) | null = null;
 
 /**
@@ -131,8 +123,32 @@ export async function startGlassesServer(deps: ServerDependencies): Promise<bool
   }
 
   const port = Number(process.env.GLASSES_PORT ?? 7010);
-  server = new AmeliaGlassesServer(deps, { packageName, apiKey, port });
-  await server.start();
+
+  // Dynamic so the SDK is only resolved when the lane is actually enabled —
+  // see the type-only import note at the top of this file.
+  const { AppServer, StreamType } = await import('@mentra/sdk');
+
+  class AmeliaGlassesServer extends AppServer {
+    protected override async onSession(
+      session: AppSession,
+      sessionId: string,
+      userId: string,
+    ): Promise<void> {
+      attachSession(session, sessionId, userId, StreamType.AUDIO_CHUNK);
+    }
+
+    protected override async onStop(
+      sessionId: string,
+      _userId: string,
+      reason: string,
+    ): Promise<void> {
+      detachSession(sessionId, reason);
+    }
+  }
+
+  const instance = new AmeliaGlassesServer({ packageName, apiKey, port });
+  await instance.start();
+  server = instance;
   console.log(`[glasses] MentraOS app server on :${port} (webhook: /webhook)`);
   return true;
 }

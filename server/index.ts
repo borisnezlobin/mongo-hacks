@@ -6,6 +6,7 @@ import { cors } from 'hono/cors';
 import type { DebugUtteranceRequest, UtteranceEvent } from '../shared/contracts';
 import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
+import { registerGlassesRoutes, startGlassesServer } from './glasses';
 import { registerIdentityRoutes } from './identity';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
@@ -63,6 +64,7 @@ export function createApp() {
   registerIdentityRoutes(app, deps);
   registerMemoryRoutes(app, deps);
   registerAmeliaRoutes(app, deps);
+  registerGlassesRoutes(app, deps);
   return { app, deps };
 }
 
@@ -74,6 +76,12 @@ export function startServer(port = Number(process.env.PORT ?? 3000)) {
   // Announced Lane A addition: the /stream WebSocket needs the server handle
   // for its upgrade hook, which only exists here.
   attachAudioStream(server as import('node:http').Server, deps);
+  // Announced Lane E addition: the MentraOS SDK runs its own Express server on
+  // its own port. No-ops unless MENTRA_PACKAGE_NAME / MENTRA_API_KEY are set,
+  // so an unconfigured checkout runs the golden path untouched.
+  void startGlassesServer(deps).catch((error: unknown) => {
+    console.error('[glasses] failed to start (golden path unaffected):', error);
+  });
   return server;
 }
 
