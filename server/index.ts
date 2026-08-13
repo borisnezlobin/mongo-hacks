@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { DebugUtteranceRequest, UtteranceEvent } from '../shared/contracts';
 import { registerAmeliaRoutes } from './amelia';
-import { registerAudioRoutes } from './audio';
+import { attachAudioStream, registerAudioRoutes } from './audio';
 import { registerIdentityRoutes } from './identity';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
@@ -67,10 +67,14 @@ export function createApp() {
 }
 
 export function startServer(port = Number(process.env.PORT ?? 3000)) {
-  const { app } = createApp();
-  return serve({ fetch: app.fetch, port }, (info) => {
+  const { app, deps } = createApp();
+  const server = serve({ fetch: app.fetch, port }, (info) => {
     console.log(`Amelia listening on http://localhost:${info.port}`);
   });
+  // Announced Lane A addition: the /stream WebSocket needs the server handle
+  // for its upgrade hook, which only exists here.
+  attachAudioStream(server as import('node:http').Server, deps);
+  return server;
 }
 
 if (isDirectRun()) startServer();

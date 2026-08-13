@@ -1,6 +1,9 @@
 export const OWNER_ID = 'owner';
 export const EMBED_MIN_MS = 3_000;
-export const ATTRIBUTION_THRESHOLD = 0.75;
+// Tuned against the fixture on 2026-08-13: within-speaker cosine bottomed at
+// 0.758 and cross-speaker peaked at 0.259, so 0.75 left almost no margin
+// before a speaker split in two. 0.6 keeps distance from both failure modes.
+export const ATTRIBUTION_THRESHOLD = 0.6;
 export const OWNER_AUTH_THRESHOLD = 0.6;
 export const TONIGHT_DEFAULT_HOUR = 21;
 export const FAST_PASS_LOOKBACK_TURNS = 8;
