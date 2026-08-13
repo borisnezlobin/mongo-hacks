@@ -9,8 +9,20 @@ export type StepKind = AmeliaStepEvent['step'];
 
 export type Emit = (event: AmeliaStepEvent) => void;
 
-/** Binds one request_id so callers can't accidentally interleave two summons. */
-export function createStepper(requestId: Id, emit: Emit) {
+export interface Stepper {
+  /** The whole trace for this request, in order. */
+  steps: AmeliaStepEvent[];
+  step(step: StepKind, message: string): AmeliaStepEvent;
+}
+
+/**
+ * Binds one request_id so callers can't accidentally interleave two summons.
+ *
+ * Create exactly ONE per request and share it — a second stepper would keep its
+ * own `steps` array, so the trace returned to the caller would silently disagree
+ * with what went out over the bus.
+ */
+export function createStepper(requestId: Id, emit: Emit): Stepper {
   const steps: AmeliaStepEvent[] = [];
   return {
     steps,

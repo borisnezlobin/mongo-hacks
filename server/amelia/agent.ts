@@ -22,7 +22,7 @@ import {
   type Id,
   type MemoryApi,
 } from '../../shared/contracts';
-import { TOOL_STEP, createStepper, type Emit } from './steps';
+import { TOOL_STEP, type Stepper } from './steps';
 import { TOOLS, runTool } from './tools';
 
 const MODEL = 'claude-opus-5';
@@ -49,19 +49,24 @@ Refer to people by name, not by id, when you speak.`;
 
 export interface AmeliaResult {
   request_id: Id;
-  /** The spoken reply. Empty only if the model refused or the loop ran out. */
+  /** The spoken reply. Empty when refused, truncated, or aborted. */
   text: string;
   steps: AmeliaStepEvent[];
   toolCallsUsed: number;
   cappedOut: boolean;
   refused: boolean;
+  /** Model hit max_tokens mid-turn — the reply is unusable, not merely short. */
+  truncated: boolean;
+  /** A newer summon superseded this run. */
+  aborted: boolean;
 }
 
 export interface RunOptions {
   requestId: Id;
   command: string;
   memory: MemoryApi;
-  emit: Emit;
+  /** Shared with the caller so AmeliaResult.steps holds the WHOLE trace. */
+  stepper: Stepper;
   signal?: AbortSignal;
 }
 
@@ -76,17 +81,33 @@ export async function runAmelia({
   requestId,
   command,
   memory,
-  emit,
+  stepper,
   signal,
 }: RunOptions): Promise<AmeliaResult> {
   const messages: Anthropic.MessageParam[] = [{ role: 'user', content: command }];
-  const { steps, step } = createStepper(requestId, emit);
+  const { steps, step } = stepper;
   let toolCallsUsed = 0;
   let cappedOut = false;
+
+  const outcome = (over: Partial<AmeliaResult>): AmeliaResult => ({
+    request_id: requestId,
+    text: '',
+    steps,
+    toolCallsUsed,
+    cappedOut,
+    refused: false,
+    truncated: false,
+    aborted: false,
+    ...over,
+  });
 
   // Each turn spends at least one tool call, so the cap plus one forced-answer
   // turn bounds this. The +2 is a belt-and-braces stop.
   for (let turn = 0; turn < AMELIA_MAX_TOOL_CALLS + 2; turn++) {
+    // A superseded run must stop touching the bus and stop running tools with
+    // side effects — abort is not just about cancelling the HTTP request.
+    if (signal?.aborted) return outcome({ aborted: true });
+
     const atCap = toolCallsUsed >= AMELIA_MAX_TOOL_CALLS;
 
     const response = await getClient().messages.create(
@@ -106,9 +127,19 @@ export async function runAmelia({
       { signal },
     );
 
+    if (signal?.aborted) return outcome({ aborted: true });
+
     if (response.stop_reason === 'refusal') {
       step('denied', 'Amelia would not answer that');
-      return { request_id: requestId, text: '', steps, toolCallsUsed, cappedOut, refused: true };
+      return outcome({ refused: true });
+    }
+
+    // max_tokens caps thinking + text together, so a truncated turn can carry a
+    // thinking block and NO text. Treating that as a normal reply makes Amelia
+    // go silent while the UI reads "Answering".
+    if (response.stop_reason === 'max_tokens') {
+      step('error', 'Ran out of room mid-thought — try again at lower effort');
+      return outcome({ truncated: true });
     }
 
     // No server-side tools in play, but an unhandled pause would otherwise look
@@ -129,7 +160,7 @@ export async function runAmelia({
         .join('')
         .trim();
       step('reply', cappedOut ? 'Partial answer — tool budget spent' : 'Answering');
-      return { request_id: requestId, text, steps, toolCallsUsed, cappedOut, refused: false };
+      return outcome({ text });
     }
 
     messages.push({ role: 'assistant', content: response.content });
@@ -138,14 +169,20 @@ export async function runAmelia({
     // every result in ONE user message, or it stops batching.
     const results: Anthropic.ToolResultBlockParam[] = [];
     for (const use of toolUses) {
+      // Re-check per tool: the abandoned run must not fire create_reminder,
+      // add_note, or draft_email on its way out.
+      if (signal?.aborted) return outcome({ aborted: true });
+
       toolCallsUsed++;
-      const outcome = await runTool(memory, use.name, use.input as Record<string, any>);
-      step(TOOL_STEP[use.name] ?? 'reason', outcome.message);
+      const toolOutcome = await runTool(memory, use.name, use.input as Record<string, any>);
+      if (signal?.aborted) return outcome({ aborted: true });
+
+      step(TOOL_STEP[use.name] ?? 'reason', toolOutcome.message);
       results.push({
         type: 'tool_result',
         tool_use_id: use.id,
-        content: JSON.stringify(outcome.result ?? null),
-        is_error: outcome.isError ?? false,
+        content: JSON.stringify(toolOutcome.result ?? null),
+        is_error: toolOutcome.isError ?? false,
       });
     }
     messages.push({ role: 'user', content: results });
@@ -154,5 +191,5 @@ export async function runAmelia({
   }
 
   step('error', 'Stopped after the maximum number of steps');
-  return { request_id: requestId, text: '', steps, toolCallsUsed, cappedOut: true, refused: false };
+  return outcome({ cappedOut: true });
 }

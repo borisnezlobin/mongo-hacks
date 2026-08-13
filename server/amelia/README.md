@@ -83,8 +83,20 @@ manual route is the only way in.
 
 ## Behaviour worth knowing
 
-- **One run at a time.** A new summon aborts the one in flight, so step events
-  never interleave.
+- **One run at a time.** A new summon aborts the one in flight. Abort is checked
+  before every model call, before and after every tool call, and again after TTS
+  — not just inside `messages.create`. A superseded run must stop writing to the
+  bus, stop running tools with side effects (`create_reminder`, `add_note`,
+  `draft_email`), and never speak: otherwise the phone plays the stale answer
+  aloud before the current one. Superseded manual summons get HTTP 409.
+- **`max_tokens` is a failure, not a short answer.** It caps thinking + text
+  together, so a truncated turn can carry a thinking block and no text at all.
+  That surfaces as an `error` step and HTTP 503, never as an empty "reply" —
+  otherwise Amelia goes silent while the UI reads "Answering".
+- **Step dispatch from the bus is deferred a microtask.** `respond()` emits its
+  first step synchronously, and the subscriber runs inside `bus.emit`'s dispatch
+  loop; without the defer, SSE clients receive the step before the utterance
+  that triggered it.
 - **Tool cap.** At `AMELIA_MAX_TOOL_CALLS` the loop keeps `tools` in the request
   but sets `tool_choice: {type: 'none'}`, forcing a final answer. Dropping the
   tool definitions would invalidate the `tool_use` blocks already in history.
