@@ -81,10 +81,15 @@ export function UtteranceRow({
       <View style={styles.column}>
         {showHeader ? (
           <Animated.View style={[styles.header, { opacity: identityFade }]}>
-            <Pressable onPress={onPressPerson}>
-              <AppText variant="bodyStrong" color={unnamed ? colors.inkMuted : colors.ink} style={styles.name}>
+            <Pressable onPress={unnamed && onName ? onName : onPressPerson} style={styles.nameRow}>
+              <AppText
+                variant="bodyStrong"
+                color={unnamed ? colors.accent : colors.ink}
+                style={styles.name}
+              >
                 {displayName(person)}
               </AppText>
+              {unnamed && onName ? <UserPlusIcon size={13} color={colors.accent} weight="bold" /> : null}
             </Pressable>
             <AppText variant="caption">{formatOffset(utterance.start_ms)}</AppText>
           </Animated.View>
@@ -95,16 +100,6 @@ export function UtteranceRow({
           {utterance.is_final ? '' : '…'}
         </AppText>
 
-        {unnamed && onName ? (
-          <Pressable
-            onPress={onName}
-            style={({ pressed }) => [styles.nameAction, pressed && styles.pressed]}
-            accessibilityLabel="Name this speaker"
-          >
-            <UserPlusIcon size={13} color={colors.accent} weight="bold" />
-            <AppText variant="caption" color={colors.accent}>This is…</AppText>
-          </Pressable>
-        ) : null}
       </View>
     </Animated.View>
   );
@@ -130,6 +125,7 @@ const styles = StyleSheet.create({
   gutterSpacer: { width: GUTTER - spacing.md },
   column: { flex: 1, gap: 2 },
   header: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   name: { fontFamily: 'Manrope_700Bold' },
   nameAction: {
     flexDirection: 'row',
