@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { VOICEPRINT_DIMS, VOYAGE_DIMS } from '../shared/contracts';
+import { EMBEDDING_DIMS, VOICEPRINT_DIMS } from '../shared/contracts';
 
 interface SearchIndexSpec {
   collection: string;
@@ -31,7 +31,7 @@ describe('Atlas index bootstrap', () => {
         .filter((index) => index.type === 'vectorSearch')
         .map((index) => [index.collection, index.definition.fields?.[0]?.numDimensions]),
     );
-    expect(dims).toEqual({ voiceprints: VOICEPRINT_DIMS, facts: VOYAGE_DIMS });
+    expect(dims).toEqual({ voiceprints: VOICEPRINT_DIMS, facts: EMBEDDING_DIMS });
   });
 
   it('declares the frozen idempotency keys', async () => {

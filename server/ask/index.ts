@@ -67,7 +67,6 @@ export async function answerQuestion(request: AskRequest): Promise<AskResponse> 
       .filter(Boolean)
       .join('\n'),
     schema: ANSWER_SCHEMA,
-    effort: 'medium',
   });
 
   const cited = new Set(extraction.cited_ids);

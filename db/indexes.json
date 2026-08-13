@@ -18,7 +18,7 @@
       "type": "vectorSearch",
       "definition": {
         "fields": [
-          {"type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine"},
+          {"type": "vector", "path": "embedding", "numDimensions": 768, "similarity": "cosine"},
           {"type": "filter", "path": "owner_id"},
           {"type": "filter", "path": "person_id"}
         ]

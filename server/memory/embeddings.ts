@@ -1,26 +1,36 @@
-import { VOYAGE_DIMS, VOYAGE_MODEL } from '../../shared/contracts';
-
-const ENDPOINT = 'https://api.voyageai.com/v1/embeddings';
+import { EMBEDDING_DIMS, EMBEDDING_MODEL } from '../../shared/contracts';
+import { fireworksKey, FIREWORKS_BASE_URL } from './fireworks';
 
 /**
- * Model and dimensions are pinned in contracts and already baked into the
- * applied Atlas vector index — changing either one invalidates facts_vector.
+ * Nomic's embedding models are trained with task prefixes: a stored fact and a
+ * question about it get different ones, and dropping them measurably degrades
+ * retrieval. They are part of the input, not decoration.
  */
-async function embedBatch(texts: string[], inputType: 'document' | 'query'): Promise<number[][]> {
-  const apiKey = process.env.VOYAGE_API_KEY;
-  if (!apiKey) throw new Error('VOYAGE_API_KEY is required for fact embeddings');
+const PREFIX = { document: 'search_document: ', query: 'search_query: ' } as const;
 
-  const response = await fetch(ENDPOINT, {
+async function embedBatch(texts: string[], inputType: keyof typeof PREFIX): Promise<number[][]> {
+  const response = await fetch(`${FIREWORKS_BASE_URL}/embeddings`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ input: texts, model: VOYAGE_MODEL, input_type: inputType, output_dimension: VOYAGE_DIMS }),
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fireworksKey()}` },
+    body: JSON.stringify({
+      model: EMBEDDING_MODEL,
+      input: texts.map((text) => `${PREFIX[inputType]}${text}`),
+      dimensions: EMBEDDING_DIMS,
+    }),
   });
-  if (!response.ok) throw new Error(`Voyage embedding failed: ${response.status} ${await response.text()}`);
+  if (!response.ok) throw new Error(`Fireworks embedding failed: ${response.status} ${await response.text()}`);
 
   const payload = (await response.json()) as { data: Array<{ embedding: number[]; index: number }> };
   const ordered = [...payload.data].sort((a, b) => a.index - b.index).map((item) => item.embedding);
-  const wrongDims = ordered.find((embedding) => embedding.length !== VOYAGE_DIMS);
-  if (wrongDims) throw new Error(`Voyage returned ${wrongDims.length} dims, index expects ${VOYAGE_DIMS}`);
+
+  // The vector index is fixed at EMBEDDING_DIMS; a silent mismatch would write
+  // rows that $vectorSearch can never return.
+  const wrongDims = ordered.find((embedding) => embedding.length !== EMBEDDING_DIMS);
+  if (wrongDims) {
+    throw new Error(
+      `${EMBEDDING_MODEL} returned ${wrongDims.length} dims but the index expects ${EMBEDDING_DIMS}`,
+    );
+  }
   return ordered;
 }
 

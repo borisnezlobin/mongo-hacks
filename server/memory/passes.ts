@@ -109,7 +109,6 @@ export async function runFastPass(bus: AmeliaBus, utterance: Utterance): Promise
       JSON.stringify(labelled, null, 2),
     ].join('\n'),
     schema: PROMISE_SCHEMA,
-    effort: 'low',
   });
 
   for (const promise of extraction.promises) {
@@ -219,7 +218,6 @@ export async function runSlowPass(bus: AmeliaBus, conversationId: Id): Promise<v
     system: SLOW_PASS_SYSTEM,
     user: `Conversation:\n${JSON.stringify(labelled, null, 2)}`,
     schema: FACT_SCHEMA,
-    effort: 'medium',
   });
 
   for (const candidate of extraction.facts) {
@@ -239,7 +237,6 @@ export async function runSlowPass(bus: AmeliaBus, conversationId: Id): Promise<v
         `New claim: ${candidate.claim}`,
       ].join('\n'),
       schema: ADJUDICATION_SCHEMA,
-      effort: 'low',
     });
 
     if (adjudication.relation === 'coexist') {
