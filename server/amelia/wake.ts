@@ -1,4 +1,15 @@
-import { OWNER_AUTH_THRESHOLD, OWNER_ID, type UtteranceEvent } from '../../shared/contracts';
+import { OWNER_AUTH_THRESHOLD, type Id, type UtteranceEvent } from '../../shared/contracts';
+
+/**
+ * The owner's PERSON id — not `OWNER_ID` from contracts.
+ *
+ * `OWNER_ID` ('owner') is the tenant scope stamped on every document as
+ * `owner_id`. The owner *person* is a separate record (`p-amelia-owner`, name
+ * "Yan", `is_owner: true` in fixtures/seed.mjs), and that is what an
+ * utterance's `person_id` holds. Comparing the two is always false, which
+ * silently disables the voice gate.
+ */
+export const OWNER_PERSON_ID: Id = process.env.OWNER_PERSON_ID ?? 'p-amelia-owner';
 
 /** Matched case- and punctuation-insensitively. */
 export const WAKE_PHRASE = 'hey amelia';
@@ -30,10 +41,14 @@ export interface WakeMatch {
  * CLOSED: an unauthenticated wake is not a summon. The press-and-hold route is
  * the deliberate bypass for a failed voice match on stage.
  */
-export function detectWake(u: UtteranceEvent, ownerConfidence?: number): WakeMatch | null {
+export function detectWake(
+  u: UtteranceEvent,
+  ownerConfidence?: number,
+  ownerPersonId: Id = OWNER_PERSON_ID,
+): WakeMatch | null {
   if (!u.is_final) return null;
   if (normalize(u.text).indexOf(WAKE_PHRASE) === -1) return null;
-  if (u.person_id !== OWNER_ID) return null;
+  if (u.person_id !== ownerPersonId) return null;
   if (ownerConfidence === undefined || ownerConfidence < OWNER_AUTH_THRESHOLD) return null;
 
   // Command = wake phrase → end of turn. Slice the ORIGINAL text so casing and
