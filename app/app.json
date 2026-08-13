@@ -22,10 +22,10 @@
     },
     "plugins": [
       "expo-audio",
-      "expo-notifications",
       "expo-image-picker",
       "expo-status-bar",
-      "expo-asset"
+      "expo-asset",
+      "./plugins/with-no-push-entitlement"
     ]
   }
 }
