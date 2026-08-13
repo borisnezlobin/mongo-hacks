@@ -1,0 +1,35 @@
+Amelia — shared agent skills (Persistent Context Sprint Hackathon 2026)
+
+Cursor auto-discovers skills in .cursor/skills/ when you open this repo.
+No per-laptop install step beyond cloning and opening in Cursor.
+
+MongoDB (official, Apache-2.0)
+  Source: https://github.com/mongodb/agent-skills @ b4ea8150a020b9babaddc6c271c6dc177c06a83f
+  Skills: mongodb-search-and-ai, mongodb-schema-design, mongodb-connection,
+          mongodb-mcp-setup, mongodb-query-optimizer, mongodb-natural-language-querying,
+          mongodb-atlas-stream-processing
+  License: .cursor/skills/MONGODB-LICENSE
+
+Hackathon partner + Amelia integration skills (.cursor/skills/)
+  amelia-project         — Repo layout, lanes, contracts, gates
+  cursor-hackathon       — Cursor credits, skills discovery, MCP setup
+  elevenlabs-amelia      — TTS for Amelia voice replies (ElevenLabs prize track)
+  fireworks-hackathon    — Fireworks inference ($50 code MONGODB813)
+  langchain-hackathon    — LangGraph / agent memory patterns
+  openrouter-hackathon   — OpenRouter routing ($10 credits)
+  anthropic-amelia       — Claude /ask reasoning and memory extraction
+  voyage-embeddings      — Voyage voyage-3.5-lite embeddings (1024 dims)
+  resend-email           — Promise reminder emails
+  pyannote-diarization   — Live diarization (Lane A audio spine)
+  mentra-glasses         — MentraOS glasses stretch (Lane E)
+
+MongoDB MCP (optional, for live Atlas inspection)
+  1. Copy .cursor/mcp.json.example → .cursor/mcp.json
+  2. Paste MONGODB_URI from server/.env as MDB_MCP_CONNECTION_STRING
+  3. Or run: npx mongodb-mcp-server@latest setup
+  4. Restart Cursor
+
+Refresh MongoDB skills from upstream:
+  curl -L https://github.com/mongodb/agent-skills/archive/main.tar.gz | tar xz
+  cp -R agent-skills-main/skills/* .cursor/skills/
+  (preserve Amelia partner skills — do not overwrite elevenlabs-amelia etc.)

@@ -4,6 +4,7 @@ Amelia Lane 0 checkpoint
 [complete] Install all lane dependencies and freeze lockfile
 [complete] Generate and verify conversation.wav
 [complete] Typecheck, test fixture replay, and Expo dependency validation
+[complete] Vendored MongoDB official agent skills + hackathon sponsor skills in .cursor/skills/
 [blocked externally] Apply Atlas indexes (MONGODB_URI is not present)
 [blocked externally] Build/install iOS dev client (no physical iPhone is connected)
 [blocked externally] Verify Resend domain and ElevenLabs tier (service credentials/accounts are not present)
