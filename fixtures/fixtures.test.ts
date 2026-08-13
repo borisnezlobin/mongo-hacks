@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
+import { DEMO_PEOPLE, demoConversation, demoParticipantIds } from './seed.mjs';
 import transcript from './transcript.json';
 
 describe('demo fixtures', () => {
@@ -10,6 +11,20 @@ describe('demo fixtures', () => {
     expect(text).toMatch(/I promise/i);
     expect(text).toMatch(/Amelia, what should I remember/i);
     expect(text).toMatch(/Maya loves Ethiopian food/i);
+  });
+
+  it('seeds every person and conversation referenced by the transcript', () => {
+    const personIds = demoParticipantIds();
+    expect(personIds).toEqual(['p-amelia-owner', 'p-maya', 'p-jules', 'p-priya']);
+    expect(DEMO_PEOPLE.map((person) => person._id)).toEqual(personIds);
+    expect(demoConversation('2026-08-13T00:00:00.000Z')).toEqual({
+      _id: 'demo-conversation',
+      owner_id: 'owner',
+      started_at: '2026-08-13T00:00:00.000Z',
+      ended_at: '2026-08-13T00:00:00.000Z',
+      title: 'Demo conversation',
+      participant_ids: personIds,
+    });
   });
 
   it('ships 16 kHz mono 16-bit PCM audio', async () => {
