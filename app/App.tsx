@@ -67,6 +67,7 @@ function Shell() {
   const [, setStreamSource] = useState<StreamSource>('connecting');
   const [namingTarget, setNamingTarget] = useState<PersonRecord | null>(null);
   const [namingUtteranceIds, setNamingUtteranceIds] = useState<string[]>([]);
+  const [namingConversationId, setNamingConversationId] = useState<string | null>(null);
 
   // Every recording gets its own conversation. Reusing one fixed id meant a new session
   // appended to the previous one, so old turns appeared in a brand-new transcript.
@@ -91,9 +92,16 @@ function Shell() {
       if (navigation.route.name !== 'conversation') navigation.openConversation(liveConversationId);
     }
     if (!streaming && wasStreaming.current) {
-      setLiveConversation(null);
+      // Keep polling briefly: the server finalises trailing turns on session.end(), well
+      // after the socket closes. Dropping live immediately truncated every recording.
+      const finished = liveConversationId;
+      setTimeout(() => setLiveConversation(null), 8000);
+      void finished;
       setSessionId(`c-${Date.now()}`);
     }
+    // A start that never reached 'streaming' (permission denied, socket refused) must not
+    // reuse its id, or the next attempt merges into the same conversation.
+    if (uplink.state === 'error') setSessionId((id) => (id === liveConversationId ? `c-${Date.now()}` : id));
     wasStreaming.current = streaming;
   }, [uplink.state, liveConversationId, navigation, setLiveConversation]);
 
@@ -136,7 +144,7 @@ function Shell() {
     // synthesised one has to be registered before it can own anything.
     ingest({
       type: 'identity',
-      conversation_id: liveConversationId,
+      conversation_id: namingConversationId ?? liveConversationId,
       person_id: namingTarget._id,
       voiceprint_id: namingTarget.voiceprint_id,
       name,
@@ -146,11 +154,16 @@ function Shell() {
     if (namingUtteranceIds.length > 0) attributeUtterances(namingUtteranceIds, namingTarget._id);
     setNamingTarget(null);
     setNamingUtteranceIds([]);
+    setNamingConversationId(null);
   };
 
   const openNaming = (person: PersonRecord, utteranceIds: string[] = []) => {
     setNamingTarget(person);
     setNamingUtteranceIds(utteranceIds);
+    // The turns being named decide which conversation this belongs to — not whatever
+    // happens to be recording right now.
+    const source = utteranceIds.map((id) => state.utterances[id]).find(Boolean);
+    setNamingConversationId(source?.conversation_id ?? null);
   };
 
   return (
