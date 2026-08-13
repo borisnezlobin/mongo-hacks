@@ -5,15 +5,15 @@
  * Lane D never writes Lane B's collections directly.
  */
 
-import type Anthropic from '@anthropic-ai/sdk';
 import { TONIGHT_DEFAULT_HOUR, type MemoryApi } from '../../shared/contracts';
+import type { ToolSpec } from './provider';
 import { draftEmail } from './email';
 
 /**
  * Descriptions are prescriptive about WHEN to call, not just what the tool
  * does — Opus-tier models reach for tools conservatively otherwise.
  */
-export const TOOLS: Anthropic.Tool[] = [
+export const TOOLS: ToolSpec[] = [
   {
     name: 'search_memory',
     description:
@@ -21,7 +21,7 @@ export const TOOLS: Anthropic.Tool[] = [
       'Call this first whenever the request depends on something a person said — a trip, ' +
       'a job, a preference, a plan. Pass person_id to scope the search when you already ' +
       'know who is meant.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'What you are looking for, in plain language.' },
@@ -35,7 +35,7 @@ export const TOOLS: Anthropic.Tool[] = [
     description:
       'Look up one person by id. Call this to turn a name in the request into a person_id ' +
       'before scoping other calls, or to read their details.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: { id: { type: 'string' } },
       required: ['id'],
@@ -48,7 +48,7 @@ export const TOOLS: Anthropic.Tool[] = [
       'could have changed over time — dates, addresses, job titles, plans — and always ' +
       'before acting on such a fact. Answering from a search hit alone risks using ' +
       'information the person has since revised.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         person_id: { type: 'string' },
@@ -67,7 +67,7 @@ export const TOOLS: Anthropic.Tool[] = [
       'write, send, or reach out to someone by email. The draft is shown in the app and is ' +
       "never sent automatically. Write in the owner's voice: plain sentences, no preamble, " +
       'no signature block.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         to_person_id: { type: 'string' },
@@ -83,7 +83,7 @@ export const TOOLS: Anthropic.Tool[] = [
       'Schedule a reminder against a promise made in conversation. Call this when the ' +
       'request asks to be reminded or to follow up at a specific time. Resolve relative ' +
       `phrasing before calling: "tonight" means ${TONIGHT_DEFAULT_HOUR}:00 today.`,
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: {
         promise_id: { type: 'string' },
@@ -97,7 +97,7 @@ export const TOOLS: Anthropic.Tool[] = [
     description:
       'Attach a note to a person. Call this when the owner states something about someone ' +
       'that should be remembered but is not a promise or a dated fact.',
-    input_schema: {
+    parameters: {
       type: 'object',
       properties: { person_id: { type: 'string' }, text: { type: 'string' } },
       required: ['person_id', 'text'],
