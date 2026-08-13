@@ -3,6 +3,13 @@ import { SAMPLE_RATE, type Segment, type StreamProvider, type Word } from './typ
 
 const REALTIME_SAMPLE_RATE = 24_000
 const DEFAULT_REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcription'
+/**
+ * Diarisation carries the speaker labels the join depends on, so it is the
+ * default. Not every organisation is entitled to that model, hence the
+ * override: OPENAI_TRANSCRIBE_MODEL swaps in a plain transcription model,
+ * which still yields text but collapses every turn onto one speaker label.
+ */
+const DEFAULT_TRANSCRIBE_MODEL = 'gpt-4o-transcribe-diarize'
 
 interface RealtimeSocket {
   readyState: number
@@ -14,6 +21,7 @@ interface RealtimeSocket {
 export interface OpenAIRealtimeProviderOptions {
   apiKey: string
   url?: string
+  model?: string
   socketFactory?: (url: string, headers: Record<string, string>) => RealtimeSocket
 }
 
@@ -43,9 +51,20 @@ export class OpenAIRealtimeProvider implements StreamProvider {
   private readonly ready: Promise<void>
   private resolveReady: (() => void) | null = null
   private rejectReady: ((error: Error) => void) | null = null
+  private readonly model: string
+  /** Stream position in ms, advanced only by ingested audio. */
+  private positionMs = 0
+  private turnStartMs: number | null = null
+  private turnIndex = 0
+  private readonly turnBounds = new Map<string, { start_ms: number; end_ms: number }>()
+  /** True once a diarising model has supplied real speaker labels. */
+  private diarized = false
+  /** End of the previous VAD turn, so consecutive turns never overlap. */
+  private lastTurnEndMs = 0
 
   constructor(options: OpenAIRealtimeProviderOptions) {
     if (!options.apiKey) throw new Error('OPENAI_API_KEY is required for live audio')
+    this.model = options.model ?? process.env.OPENAI_TRANSCRIBE_MODEL ?? DEFAULT_TRANSCRIBE_MODEL
     this.ready = new Promise((resolve, reject) => {
       this.resolveReady = resolve
       this.rejectReady = reject
@@ -72,12 +91,15 @@ export class OpenAIRealtimeProvider implements StreamProvider {
           audio: {
             input: {
               format: { type: 'audio/pcm', rate: REALTIME_SAMPLE_RATE },
-              transcription: { model: 'gpt-4o-transcribe-diarize', language: 'en' },
+              transcription: { model: this.model, language: 'en' },
               turn_detection: {
                 type: 'server_vad',
                 threshold: 0.5,
                 prefix_padding_ms: 300,
-                silence_duration_ms: 500,
+                // Short, because turn boundaries are load-bearing here: without
+                // a diarising model each VAD turn is the unit that voiceprint
+                // matching attributes, so conversational gaps must split.
+                silence_duration_ms: Number(process.env.OPENAI_SILENCE_MS ?? 200),
               },
             },
           },
@@ -110,8 +132,14 @@ export class OpenAIRealtimeProvider implements StreamProvider {
     })
   }
 
-  pushAudio(pcm: Float32Array): void {
+  pushAudio(pcm: Float32Array, positionMs?: number): void {
     if (pcm.length === 0) return
+    // The stream clock is the only timeline the rest of the system trusts, so
+    // turn boundaries are stamped from it rather than from arrival time.
+    this.positionMs =
+      positionMs !== undefined
+        ? positionMs + Math.round((pcm.length / SAMPLE_RATE) * 1000)
+        : this.positionMs + Math.round((pcm.length / SAMPLE_RATE) * 1000)
     this.sentAudio = true
     const audio = pcm16Base64(resampleLinear(pcm, SAMPLE_RATE, REALTIME_SAMPLE_RATE))
     if (this.opened) this.append(audio)
@@ -141,7 +169,7 @@ export class OpenAIRealtimeProvider implements StreamProvider {
       this.send({ type: 'input_audio_buffer.commit' })
       await Promise.race([
         flushed,
-        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+        new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
       ])
     }
     this.socket.close(1000, 'stream complete')
@@ -161,19 +189,85 @@ export class OpenAIRealtimeProvider implements StreamProvider {
       const detail = event as { error?: { message?: string } }
       throw new Error(detail.error?.message ?? 'OpenAI Realtime error')
     }
-    if (event.type === 'conversation.item.input_audio_transcription.completed') {
-      this.flushComplete?.()
-      this.flushComplete = null
+    // Diarising models hand back speaker labels and timings directly. Every
+    // other transcription model returns text only, so the two paths below
+    // reconstruct turns from server VAD plus the stream clock instead.
+    if (event.type === 'conversation.item.input_audio_transcription.segment') {
+      const segment = event as TranscriptionSegmentEvent
+      if (!segment.text || segment.start === undefined || segment.end === undefined) return
+      this.diarized = true
+      const startMs = Math.round(segment.start * 1000)
+      const endMs = Math.round(segment.end * 1000)
+      this.emitTurn(segment.speaker ?? 'SPEAKER_00', startMs, endMs, segment.text)
       return
     }
-    if (event.type !== 'conversation.item.input_audio_transcription.segment') return
-    const segment = event as TranscriptionSegmentEvent
-    if (!segment.text || segment.start === undefined || segment.end === undefined) return
-    const startMs = Math.round(segment.start * 1000)
-    const endMs = Math.round(segment.end * 1000)
-    const speaker = segment.speaker ?? 'SPEAKER_00'
-    this.segmentHandler([{ speaker, start_ms: startMs, end_ms: endMs }])
-    this.wordHandler(spreadWords(segment.text, startMs, endMs))
+
+    // Server VAD reports its own buffer offsets, which are the position in the
+    // audio we sent rather than the time the event arrived. Using them keeps
+    // segment boundaries aligned with the samples even when the socket lags,
+    // which matters because voiceprint matching slices audio by these times.
+    if (event.type === 'input_audio_buffer.speech_started') {
+      const started = event as { item_id?: string; audio_start_ms?: number }
+      // VAD reports speech starting prefix_padding_ms before it really does,
+      // so turns overlap and the joiner would pull one turn's tail words into
+      // the next speaker's utterance. Clamped here, on the speech events,
+      // because those arrive in audio order — transcription completions do
+      // not, and clamping there produced degenerate one-millisecond turns.
+      const startMs = Math.max(started.audio_start_ms ?? this.positionMs, this.lastTurnEndMs)
+      this.turnStartMs = startMs
+      if (started.item_id) {
+        this.turnBounds.set(started.item_id, { start_ms: startMs, end_ms: startMs })
+      }
+      return
+    }
+
+    if (event.type === 'input_audio_buffer.speech_stopped') {
+      const stopped = event as { item_id?: string; audio_end_ms?: number }
+      const endMs = stopped.audio_end_ms ?? this.positionMs
+      this.lastTurnEndMs = Math.max(this.lastTurnEndMs, endMs)
+      if (stopped.item_id) {
+        const bounds = this.turnBounds.get(stopped.item_id)
+        this.turnBounds.set(stopped.item_id, {
+          start_ms: bounds?.start_ms ?? this.turnStartMs ?? 0,
+          end_ms: endMs,
+        })
+      }
+      this.turnStartMs = null
+      return
+    }
+
+    if (event.type === 'conversation.item.input_audio_transcription.completed') {
+      const completed = event as { item_id?: string; transcript?: string }
+      if (!this.diarized && completed.transcript?.trim()) {
+        const bounds = (completed.item_id && this.turnBounds.get(completed.item_id)) || {
+          start_ms: this.turnStartMs ?? 0,
+          end_ms: this.positionMs,
+        }
+        if (completed.item_id) this.turnBounds.delete(completed.item_id)
+        // One label per turn. Voiceprint matching downstream decides who each
+        // turn belongs to; inventing a shared label here would merge speakers.
+        this.emitTurn(
+          `turn-${this.turnIndex++}`,
+          bounds.start_ms,
+          Math.max(bounds.end_ms, bounds.start_ms + 1),
+          completed.transcript.trim(),
+        )
+      }
+      // Only release the flush once every turn the server opened has come
+      // back. Resolving on the first completion would close the socket while
+      // later turns are still in flight, and the last thing said is exactly
+      // what the demo depends on.
+      if (this.turnBounds.size === 0) {
+        this.flushComplete?.()
+        this.flushComplete = null
+      }
+    }
+  }
+
+  private emitTurn(speaker: string, startMs: number, endMs: number, text: string): void {
+    const end = Math.max(endMs, startMs + 1)
+    this.segmentHandler([{ speaker, start_ms: startMs, end_ms: end }])
+    this.wordHandler(spreadWords(text, startMs, end))
   }
 }
 
