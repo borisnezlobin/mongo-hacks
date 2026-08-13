@@ -61,7 +61,7 @@ export default function App() {
 }
 
 function Shell() {
-  const { state, ingest, namePerson, attributeUtterances } = useStore();
+  const { state, ingest, namePerson, attributeUtterances, setLiveConversation } = useStore();
   const navigation = useNavigation();
   const insets = useInsets();
   const [, setStreamSource] = useState<StreamSource>('connecting');
@@ -86,12 +86,16 @@ function Shell() {
   const wasStreaming = useRef(false);
   useEffect(() => {
     const streaming = uplink.state === 'streaming';
-    if (streaming && !wasStreaming.current && navigation.route.name !== 'conversation') {
-      navigation.openConversation(liveConversationId);
+    if (streaming && !wasStreaming.current) {
+      setLiveConversation(liveConversationId);
+      if (navigation.route.name !== 'conversation') navigation.openConversation(liveConversationId);
     }
-    if (!streaming && wasStreaming.current) setSessionId(`c-${Date.now()}`);
+    if (!streaming && wasStreaming.current) {
+      setLiveConversation(null);
+      setSessionId(`c-${Date.now()}`);
+    }
     wasStreaming.current = streaming;
-  }, [uplink.state, liveConversationId, navigation]);
+  }, [uplink.state, liveConversationId, navigation, setLiveConversation]);
 
   // Any open promise carrying a due date schedules itself; closing one takes it back.
   const scheduledRef = useRef(new Set<string>());
