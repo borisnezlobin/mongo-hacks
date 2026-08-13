@@ -44,17 +44,21 @@ export const TOOLS: ToolSpec[] = [
   {
     name: 'resolve_fact_state',
     description:
-      'Get the CURRENT value of one attribute for one person. Call this whenever a fact ' +
-      'could have changed over time — dates, addresses, job titles, plans — and always ' +
-      'before acting on such a fact. Answering from a search hit alone risks using ' +
-      'information the person has since revised.',
+      'Get the CURRENT value of one attribute for one person. Call this when a fact could ' +
+      'have changed over time — a date, an address, a plan — before acting on it, because ' +
+      'a search hit may be a value the person has since revised.\n' +
+      'Attributes are SHORT SINGLE WORDS from a small controlled vocabulary, currently: ' +
+      'move, job, name, preference, project, email. Use one of those exactly. ' +
+      'Multi-word guesses like "move_date" or "move in date" do not exist and will return ' +
+      'nothing. If the attribute you want is not in that list, do not guess variations — ' +
+      'answer from the search results instead.',
     parameters: {
       type: 'object',
       properties: {
         person_id: { type: 'string' },
         attribute: {
           type: 'string',
-          description: 'Short attribute key, e.g. "move_in_date", "recent_trip", "email".',
+          description: 'One short lowercase word, e.g. "move", "job", "preference", "email".',
         },
       },
       required: ['person_id', 'attribute'],
@@ -147,9 +151,22 @@ export async function runTool(
         // `{current, superseded[]}`, this message can only state the current
         // value — it cannot render "Aug 15 → Aug 20", which is the video's
         // 20–32s beat. Raised with the contracts owner.
+        if (fact) return { result: fact, message: `${attribute}: ${fact.claim}` };
+
+        // A miss used to send the model hunting through attribute-name variants
+        // ("move date", "move in date", "oakland move date"), burning the whole
+        // tool budget and returning no answer at all. Say plainly that guessing
+        // will not help.
         return {
-          result: fact,
-          message: fact ? `${attribute}: ${fact.claim}` : `Nothing recorded for ${attribute}`,
+          result: {
+            found: false,
+            attribute: input.attribute,
+            hint:
+              'No such attribute. Attributes are short single words (move, job, name, ' +
+              'preference, project, email). Do not try variations of this name — use the ' +
+              'search results you already have.',
+          },
+          message: `Nothing recorded for ${attribute}`,
         };
       }
 
