@@ -15,10 +15,13 @@ export interface Embedding {
  * failure — let it throw.
  */
 export async function embedPcm(pcm: Float32Array): Promise<Embedding> {
+  // Copy into a standalone ArrayBuffer sized to exactly these samples; a
+  // Uint8Array view trips over the DOM/node BodyInit type split.
+  const payload = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer
   const response = await fetch(`${SIDECAR_URL()}/embed`, {
     method: 'POST',
     headers: { 'content-type': 'application/octet-stream' },
-    body: new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength),
+    body: payload,
   })
   if (!response.ok) {
     throw new Error(`sidecar embed failed (${response.status}): ${await response.text()}`)
