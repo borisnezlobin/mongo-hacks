@@ -16,7 +16,7 @@ import { loadEnv } from '../memory/env';
 import { extractStructured } from '../memory/llm';
 import { hybridFactSearch, scanPromisesAndUtterances } from './candidates';
 import { retrievalConfig } from './config';
-import { planQuery } from './query-plan';
+import { keywordsFrom, planQuery } from './query-plan';
 import { searchMemory } from './retrieval';
 import type { Candidate, Filter, RetrievalDeps } from './types';
 
@@ -96,13 +96,13 @@ async function main(): Promise<void> {
       `variants=${config.maxVariants} pool=${config.rerankPool} limit=${config.limit}`,
   );
 
-  console.log('\n— stage 1: query plan —');
+  console.log(`\n— stage 1: query plan ${config.plan ? '' : '(off — set ASK_QUERY_PLANNING=1) '}—`);
   const planStarted = Date.now();
   const plan = await planQuery(query, deps, config);
   console.log(`  ${Date.now() - planStarted} ms`);
   console.log(`  variants     : ${plan.variants.length > 0 ? plan.variants.join(' | ') : '(none)'}`);
   console.log(`  hypothetical : ${plan.hypothetical ?? '(none)'}`);
-  console.log(`  keywords     : ${plan.keywords.join(', ') || '(none)'}`);
+  console.log(`  keywords     : ${keywordsFrom(query).join(', ') || '(none)'} (derived locally, not from the planner)`);
 
   console.log('\n— stage 2: recall per formulation —');
   const formulations = [query, ...(plan.hypothetical ? [plan.hypothetical] : []), ...plan.variants];
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     perLeg.push(hits);
     console.log(`  ${String(hits.length).padStart(3)} facts in ${String(Date.now() - started).padStart(5)} ms  "${preview(text, 56)}"`);
   }
-  const scanned = await scanPromisesAndUtterances(deps, config, plan.keywords, personId);
+  const scanned = await scanPromisesAndUtterances(deps, config, keywordsFrom(query), personId);
   console.log(`  ${String(scanned.length).padStart(3)} promises/utterances from the keyword scan`);
 
   const unionSize = new Set(perLeg.flat().map((candidate) => candidate.id)).size;

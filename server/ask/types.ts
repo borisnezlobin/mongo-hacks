@@ -22,6 +22,7 @@ export interface StructuredRequest {
   user: string;
   schema: Record<string, unknown>;
   maxTokens?: number;
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 /**

@@ -4,9 +4,9 @@ import { embedQueries } from '../memory/embeddings';
 import { extractStructured } from '../memory/llm';
 import { hybridFactSearch, scanPromisesAndUtterances } from './candidates';
 import { retrievalConfig, type RetrievalConfig } from './config';
-import { capPerAttribute, fuseCandidates, type RankedList } from './fusion';
-import { planQuery, type QueryPlan } from './query-plan';
-import { rerankCandidates } from './rerank';
+import { capPerAttribute, fuseCandidates, normalizeScores, type RankedList } from './fusion';
+import { fallbackPlan, keywordsFrom, planQuery, type QueryPlan } from './query-plan';
+import { applyJudgements, judgeCandidates } from './rerank';
 import { toSearchResult, type Candidate, type Filter, type RetrievalDeps } from './types';
 
 /**
@@ -42,6 +42,23 @@ function defaultDeps(): RetrievalDeps {
   };
 }
 
+/**
+ * Resolves to `fallback` if the work has not finished in time. The work is not
+ * cancelled — there is nothing to cancel a fetch with here — it is simply no
+ * longer waited on, and its result is discarded.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  if (ms <= 0) return work;
+  let timer: ReturnType<typeof setTimeout>;
+  const expiry = new Promise<T>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`${label} exceeded its ${ms} ms deadline; continuing without it`);
+      resolve(fallback);
+    }, ms);
+  });
+  return Promise.race([work, expiry]).finally(() => clearTimeout(timer));
+}
+
 /** Losing one leg should cost that leg's recall, not the whole answer. */
 async function tolerate(label: string, work: Promise<Candidate[]>): Promise<Candidate[]> {
   try {
@@ -52,9 +69,10 @@ async function tolerate(label: string, work: Promise<Candidate[]>): Promise<Cand
   }
 }
 
-/** The formulations to embed, in the order their weights are assigned below. */
+/** Every formulation to search, the question first, each with its fusion weight. */
 function formulations(plan: QueryPlan): Array<{ text: string; weight: number }> {
   return [
+    { text: plan.original, weight: WEIGHT.original },
     ...(plan.hypothetical ? [{ text: plan.hypothetical, weight: WEIGHT.hypothetical }] : []),
     ...plan.variants.map((text) => ({ text, weight: WEIGHT.variant })),
   ];
@@ -62,54 +80,38 @@ function formulations(plan: QueryPlan): Array<{ text: string; weight: number }> 
 
 /**
  * Stages 2 and 3: fan the plan out over the hybrid fact index and fuse the
- * rankings back together. The original question is searched first and in
- * parallel with planning, so stage 1's latency is mostly hidden behind a leg
- * that would have run anyway.
+ * rankings back together.
+ *
+ * Every formulation is embedded in one request. The question could be embedded
+ * earlier, overlapping the planner, but the inference account serialises
+ * requests, so an extra round trip costs more than the overlap saves. Atlas is a
+ * different service and does run its legs concurrently.
  */
 async function recallFacts(
   plan: QueryPlan,
-  baseline: Candidate[],
   deps: RetrievalDeps,
   config: RetrievalConfig,
   personId?: Id,
 ): Promise<RankedList[]> {
-  const extra = formulations(plan);
-  if (extra.length === 0) return [{ weight: WEIGHT.original, items: baseline }];
+  const legs = formulations(plan);
 
   let embeddings: number[][] = [];
   try {
-    embeddings = await deps.embedQueries(extra.map((entry) => entry.text));
+    embeddings = await deps.embedQueries(legs.map((leg) => leg.text));
   } catch (error) {
-    console.warn('embedding the expanded queries failed, using the original only:', (error as Error).message);
-    return [{ weight: WEIGHT.original, items: baseline }];
+    console.warn('embedding the query failed, facts are unreachable:', (error as Error).message);
+    return [];
   }
 
-  const expanded = await Promise.all(
-    extra.map((entry, index) => {
+  return Promise.all(
+    legs.map(async (leg, index) => {
       const embedding = embeddings[index];
-      if (!embedding) return Promise.resolve<Candidate[]>([]);
-      return tolerate(
-        `variant:${entry.text}`,
-        hybridFactSearch(deps, config, entry.text, embedding, personId),
-      );
+      const items = embedding
+        ? await tolerate(`leg:${leg.text}`, hybridFactSearch(deps, config, leg.text, embedding, personId))
+        : [];
+      return { weight: leg.weight, items };
     }),
   );
-
-  return [
-    { weight: WEIGHT.original, items: baseline },
-    ...expanded.map((items, index) => ({ weight: extra[index]!.weight, items })),
-  ];
-}
-
-async function baselineFacts(
-  query: string,
-  deps: RetrievalDeps,
-  config: RetrievalConfig,
-  personId?: Id,
-): Promise<Candidate[]> {
-  const [embedding] = await deps.embedQueries([query]);
-  if (!embedding) return [];
-  return hybridFactSearch(deps, config, query, embedding, personId);
 }
 
 async function run(
@@ -121,16 +123,21 @@ async function run(
   const config = retrievalConfig(options.config);
   const deps = options.deps ?? defaultDeps();
 
-  // Stage 1 runs against the clock of a leg that does not depend on it.
-  const [baseline, plan] = await Promise.all([
-    tolerate('baseline', baselineFacts(query, deps, config, personId)),
+  // Stage 1 is one inference request and it gates the rest, so it is bounded:
+  // past the deadline the question is searched as the asker wrote it.
+  const plan = await withDeadline(
     planQuery(query, deps, config),
-  ]);
+    config.planDeadlineMs,
+    fallbackPlan(query),
+    'query planning',
+  );
 
+  // The keyword scan needs no plan and no embedding, so it rides along with the
+  // Atlas legs rather than adding to the wait.
   const [rankings, scanned] = await Promise.all([
-    recallFacts(plan, baseline, deps, config, personId),
+    recallFacts(plan, deps, config, personId),
     includeScan
-      ? tolerate('scan', scanPromisesAndUtterances(deps, config, plan.keywords, personId))
+      ? tolerate('scan', scanPromisesAndUtterances(deps, config, keywordsFrom(query), personId))
       : Promise.resolve<Candidate[]>([]),
   ]);
 
@@ -138,10 +145,13 @@ async function run(
   if (fused.length === 0) return [];
 
   // Stage 4 sees a wide pool and stage 5 trims it, so precision costs no recall.
-  const reranked = await rerankCandidates(query, fused.slice(0, config.rerankPool), deps, config);
-  return capPerAttribute(reranked, config.attributeCap)
-    .slice(0, config.limit)
-    .map(toSearchResult);
+  const pool = fused.slice(0, config.rerankPool);
+  if (!config.rerank) return trim(normalizeScores(pool), config);
+  return trim(applyJudgements(pool, await judgeCandidates(query, pool, deps, config)), config);
+}
+
+function trim(candidates: Candidate[], config: RetrievalConfig): SearchMemoryResult[] {
+  return capPerAttribute(candidates, config.attributeCap).slice(0, config.limit).map(toSearchResult);
 }
 
 /** Only ever returns live facts: a superseded claim must never reach an answer. */
@@ -160,7 +170,7 @@ export function searchPromisesAndUtterances(
 ): Promise<SearchMemoryResult[]> {
   const config = retrievalConfig(options.config);
   const deps = options.deps ?? defaultDeps();
-  return tolerate('scan', scanPromisesAndUtterances(deps, config, query.split(/\s+/), personId)).then(
+  return tolerate('scan', scanPromisesAndUtterances(deps, config, keywordsFrom(query), personId)).then(
     (candidates) => candidates.map(toSearchResult),
   );
 }

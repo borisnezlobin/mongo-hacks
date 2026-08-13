@@ -50,6 +50,8 @@ function harness(options: {
   utterances?: Utterance[];
   plan?: unknown;
   rerank?: unknown;
+  planDelayMs?: number;
+  onComplete?: (isRerank: boolean, user: string) => void;
   onAggregate?: (pipeline: PipelineStage[]) => void;
 }): Harness {
   const pipelines: PipelineStage[][] = [];
@@ -63,6 +65,10 @@ function harness(options: {
     complete: async <T>(request: StructuredRequest) => {
       const isRerank = request.user.includes('Items:');
       const reply = isRerank ? options.rerank : options.plan;
+      options.onComplete?.(isRerank, request.user);
+      if (!isRerank && options.planDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.planDelayMs));
+      }
       if (reply === undefined) throw new Error(isRerank ? 'no rerank stub' : 'no plan stub');
       return reply as T;
     },
@@ -84,6 +90,8 @@ function harness(options: {
 }
 
 const NO_LLM = { plan: false, rerank: false };
+/** Planning is off by default; the tests that exercise stage 1 ask for it. */
+const PLANNED = { plan: true };
 
 describe('searchMemory', () => {
   it('surfaces a fact only the planner\'s vocabulary could reach', async () => {
@@ -92,26 +100,26 @@ describe('searchMemory', () => {
         "what's Sarah's usual": [],
         'sarah oat milk latte': [fact('f-latte', 'Sarah drinks oat milk lattes')],
       },
-      plan: { variants: ['sarah oat milk latte'], hypothetical: '', keywords: ['sarah'] },
+      plan: { variants: ['sarah oat milk latte'], hypothetical: '' },
       rerank: { rankings: [{ item: 0, relevance: 3 }] },
     });
 
-    const results = await searchMemory("what's Sarah's usual", undefined, { deps });
+    const results = await searchMemory("what's Sarah's usual", undefined, { deps, config: PLANNED });
 
     expect(results.map((result) => result.id)).toEqual(['f-latte']);
     expect(results[0]).toMatchObject({ kind: 'fact', person_id: 'sarah', source_utterance_id: 'utt-f-latte' });
-    // The original goes out alone so its leg can overlap planning; the rest share a batch.
-    expect(embedded).toEqual([["what's Sarah's usual"], ['sarah oat milk latte']]);
+    // Every formulation shares one embedding request.
+    expect(embedded).toEqual([["what's Sarah's usual", 'sarah oat milk latte']]);
   });
 
   it('searches the hypothetical answer alongside the question', async () => {
     const { deps } = harness({
       factsBy: { 'Sarah drinks oat milk lattes.': [fact('f-hyde', 'Sarah drinks oat milk lattes')] },
-      plan: { variants: [], hypothetical: 'Sarah drinks oat milk lattes.', keywords: ['sarah'] },
+      plan: { variants: [], hypothetical: 'Sarah drinks oat milk lattes.' },
       rerank: { rankings: [{ item: 0, relevance: 2 }] },
     });
 
-    const results = await searchMemory('what does Sarah drink', undefined, { deps });
+    const results = await searchMemory('what does Sarah drink', undefined, { deps, config: PLANNED });
     expect(results.map((result) => result.id)).toEqual(['f-hyde']);
   });
 
@@ -123,11 +131,11 @@ describe('searchMemory', () => {
         'what does Sarah drink': [agreed],
         'sarah coffee': [single, agreed],
       },
-      plan: { variants: ['sarah coffee'], hypothetical: '', keywords: ['sarah'] },
+      plan: { variants: ['sarah coffee'], hypothetical: '' },
       rerank: { rankings: [{ item: 0, relevance: 2 }, { item: 1, relevance: 2 }] },
     });
 
-    const results = await searchMemory('what does Sarah drink', undefined, { deps });
+    const results = await searchMemory('what does Sarah drink', undefined, { deps, config: PLANNED });
     expect(results.map((result) => result.id)).toEqual(['f-agreed', 'f-single']);
   });
 
@@ -135,12 +143,12 @@ describe('searchMemory', () => {
     const seen: boolean[] = [];
     const { deps } = harness({
       factsBy: { q: [] },
-      plan: { variants: ['other'], hypothetical: 'hyde', keywords: ['term'] },
+      plan: { variants: ['other'], hypothetical: 'hyde' },
       rerank: { rankings: [] },
       onAggregate: (pipeline) => seen.push(hasLiveFilter(pipeline)),
     });
 
-    await searchMemory('q', undefined, { deps });
+    await searchMemory('q', undefined, { deps, config: PLANNED });
 
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(Boolean)).toBe(true);
@@ -148,7 +156,7 @@ describe('searchMemory', () => {
 
   it('includes promises and utterances, and caps them below facts by default', async () => {
     const { deps } = harness({
-      factsBy: { q: [fact('f1', 'Sarah drinks lattes')] },
+      factsBy: { 'what about the deck': [fact('f1', 'Sarah drinks lattes')] },
       promises: [
         {
           _id: 'p1',
@@ -161,12 +169,50 @@ describe('searchMemory', () => {
           created_at: '2026-08-02T00:00:00.000Z',
         },
       ],
-      plan: { variants: [], hypothetical: '', keywords: ['deck'] },
+      plan: { variants: [], hypothetical: '' },
       rerank: { rankings: [{ item: 0, relevance: 2 }, { item: 1, relevance: 2 }] },
     });
 
-    const results = await searchMemory('q', undefined, { deps });
+    const results = await searchMemory('what about the deck', undefined, { deps });
     expect(results.map((result) => result.kind)).toEqual(['fact', 'promise']);
+  });
+
+  it('spends exactly two inference requests: one plan, one rerank', async () => {
+    const shared = fact('f-shared', 'Maya moves to Oakland on September 15');
+    const calls: string[] = [];
+    const { deps, embedded } = harness({
+      factsBy: { 'when is Maya moving': [shared], 'maya move date': [shared] },
+      plan: { variants: ['maya move date'], hypothetical: '' },
+      rerank: { rankings: [{ item: 0, relevance: 3 }] },
+      onComplete: (isRerank) => calls.push(isRerank ? 'rerank' : 'plan'),
+    });
+
+    const results = await searchMemory('when is Maya moving', undefined, { deps, config: PLANNED });
+
+    expect(calls).toEqual(['plan', 'rerank']);
+    // And one embedding request covering every formulation.
+    expect(embedded).toEqual([['when is Maya moving', 'maya move date']]);
+    expect(results.map((result) => result.id)).toEqual(['f-shared']);
+  });
+
+  it('abandons a planner that outlasts its deadline', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps, embedded } = harness({
+      factsBy: { 'what does Sarah drink': [fact('f1', 'Sarah drinks lattes')] },
+      plan: { variants: ['never arrives'], hypothetical: '' },
+      rerank: { rankings: [{ item: 0, relevance: 3 }] },
+      planDelayMs: 50,
+    });
+
+    const results = await searchMemory('what does Sarah drink', undefined, {
+      deps,
+      config: { plan: true, planDeadlineMs: 1 },
+    });
+
+    // The expansion is lost; the question itself is still searched.
+    expect(embedded).toEqual([['what does Sarah drink']]);
+    expect(results.map((result) => result.id)).toEqual(['f1']);
+    warn.mockRestore();
   });
 
   it('degrades to the raw question when planning fails', async () => {
@@ -176,7 +222,7 @@ describe('searchMemory', () => {
       rerank: { rankings: [{ item: 0, relevance: 3 }] },
     });
 
-    const results = await searchMemory('what does Sarah drink', undefined, { deps });
+    const results = await searchMemory('what does Sarah drink', undefined, { deps, config: PLANNED });
 
     expect(results.map((result) => result.id)).toEqual(['f1']);
     warn.mockRestore();
@@ -215,7 +261,7 @@ describe('searchMemory', () => {
   it('returns nothing rather than filler when the reranker rejects the pool', async () => {
     const { deps } = harness({
       factsBy: { q: [fact('f1', 'Sarah drinks lattes')] },
-      plan: { variants: [], hypothetical: '', keywords: [] },
+      plan: { variants: [], hypothetical: '' },
       rerank: { rankings: [{ item: 0, relevance: 0 }] },
     });
 
@@ -226,7 +272,7 @@ describe('searchMemory', () => {
     const crowded = ['a', 'b', 'c'].map((id) => fact(`f-${id}`, `Sarah drinks ${id}`));
     const { deps } = harness({
       factsBy: { q: [...crowded, fact('f-job', 'Sarah works at Acme', { attribute: 'employer' })] },
-      plan: { variants: [], hypothetical: '', keywords: [] },
+      plan: { variants: [], hypothetical: '' },
       rerank: { rankings: [0, 1, 2, 3].map((item) => ({ item, relevance: 2 })) },
     });
 

@@ -12,38 +12,31 @@ export interface QueryPlan {
    * embedding space. Searching with a hypothetical answer closes that gap.
    */
   hypothetical?: string;
-  /** Content words for the lexical leg and the promise/utterance scan. */
-  keywords: string[];
 }
 
 const PLAN_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['variants', 'hypothetical', 'keywords'],
+  required: ['variants', 'hypothetical'],
   properties: {
     variants: { type: 'array', items: { type: 'string' }, maxItems: 4 },
     hypothetical: { type: 'string' },
-    keywords: { type: 'array', items: { type: 'string' }, maxItems: 8 },
   },
 } as const;
 
-const PLAN_SYSTEM = `You prepare search queries against a personal memory of real conversations.
+/**
+ * Deliberately terse. This call is on the interactive path, and every extra
+ * instruction buys reasoning tokens the asker waits on. Rewriting a question is
+ * not a task the model needs talked through.
+ */
+const PLAN_SYSTEM = `Rewrite a question for search over a memory of spoken conversations.
+The memory holds short declarative claims about people ("Sarah drinks oat milk lattes"),
+promises, and transcript lines.
 
-The memory stores short declarative claims about people, each keyed by an attribute,
-for example attribute "coffee_order" with the claim "Sarah drinks oat milk lattes".
-It also stores promises someone made and raw transcript lines.
+variants: up to three rephrasings in the words a speaker would use out loud. Never the question verbatim.
+hypothetical: one short declarative sentence that would answer the question. Invent specifics; it is only a search vector.
 
-Given a question, return:
-- variants: up to three alternative phrasings or narrower sub-questions. Use the
-  vocabulary a speaker would actually use out loud, not the vocabulary of the
-  question. Do not restate the question verbatim.
-- hypothetical: one short declarative sentence that would answer the question if
-  it were in the memory. Invent plausible specifics; it is used only as a search
-  vector and is never shown to anyone.
-- keywords: the content words worth matching literally, lowercase, no pronouns,
-  no question words, no filler.
-
-Return nothing else. If the question is already minimal, return fewer variants.`;
+Answer immediately. Do not deliberate.`;
 
 const STOPWORDS = new Set([
   'what', 'when', 'where', 'which', 'who', 'whom', 'whose', 'does', 'did', 'do', 'is', 'are',
@@ -52,7 +45,11 @@ const STOPWORDS = new Set([
   'something', 'again', 'there', 'here', 'into', 'over', 'like', 'just', 'much', 'many',
 ]);
 
-/** Content words only, so the lexical leg is not dominated by question scaffolding. */
+/**
+ * Content words only, so the keyword scan is not dominated by question
+ * scaffolding. Derived locally rather than asked of the planner: it costs
+ * nothing, and it keeps the scan independent of an inference request.
+ */
 export function keywordsFrom(query: string): string[] {
   const words = query
     .toLowerCase()
@@ -63,7 +60,7 @@ export function keywordsFrom(query: string): string[] {
 }
 
 export function fallbackPlan(query: string): QueryPlan {
-  return { original: query, variants: [], keywords: keywordsFrom(query) };
+  return { original: query, variants: [] };
 }
 
 function clean(values: unknown, limit: number): string[] {
@@ -95,11 +92,12 @@ export async function planQuery(
   if (!config.plan) return fallbackPlan(query);
 
   try {
-    const reply = await deps.complete<{ variants: string[]; hypothetical: string; keywords: string[] }>({
+    const reply = await deps.complete<{ variants: string[]; hypothetical: string }>({
       system: PLAN_SYSTEM,
       user: `Question: ${query}`,
       schema: PLAN_SCHEMA,
-      maxTokens: 500,
+      maxTokens: 400,
+      reasoningEffort: 'low',
     });
 
     const original = query.trim().toLowerCase();
@@ -107,15 +105,8 @@ export async function planQuery(
       (variant) => variant.toLowerCase() !== original,
     );
     const hypothetical = typeof reply.hypothetical === 'string' ? reply.hypothetical.trim() : '';
-    const keywords = clean(reply.keywords, 8).map((keyword) => keyword.toLowerCase());
 
-    return {
-      original: query,
-      variants,
-      hypothetical: hypothetical || undefined,
-      // The planner can return nothing usable while still returning valid JSON.
-      keywords: keywords.length > 0 ? keywords : keywordsFrom(query),
-    };
+    return { original: query, variants, hypothetical: hypothetical || undefined };
   } catch (error) {
     console.warn('query planning failed, searching the raw question:', (error as Error).message);
     return fallbackPlan(query);
