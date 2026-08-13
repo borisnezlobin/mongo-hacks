@@ -5,28 +5,28 @@ import { Platform } from 'react-native';
  * with a single rust accent so the recording and live states read at arm's length.
  */
 export const colors = {
-  canvas: '#F7F3EC',
-  canvasSunken: '#F1EBE1',
+  canvas: '#FAF9F9',
+  canvasSunken: '#F1EFEF',
   surface: '#FFFFFF',
-  surfaceMuted: '#FAF7F1',
-  line: '#E7DFD3',
-  lineStrong: '#D8CDBC',
+  surfaceMuted: '#F8F6F6',
+  line: '#E8E4E4',
+  lineStrong: '#D6D1D1',
 
-  ink: '#241F1A',
-  inkMuted: '#6C6259',
-  inkFaint: '#9B9289',
-  inkInverse: '#FFFDF9',
+  ink: '#1B1918',
+  inkMuted: '#5E5957',
+  inkFaint: '#918B89',
+  inkInverse: '#FFFFFF',
 
-  accent: '#8C4A2F',
-  accentSoft: '#F3E6DE',
-  live: '#C0432C',
-  liveSoft: '#F8E3DD',
+  accent: '#BE2D26',
+  accentSoft: '#FCEBE9',
+  live: '#D92D20',
+  liveSoft: '#FDE7E4',
   positive: '#3F6B4A',
   positiveSoft: '#E4EDE5',
 
-  glass: 'rgba(255, 253, 249, 0.82)',
-  glassLine: 'rgba(36, 31, 26, 0.06)',
-  scrim: 'rgba(36, 31, 26, 0.28)',
+  glass: 'rgba(255, 255, 255, 0.86)',
+  glassLine: 'rgba(27, 25, 24, 0.06)',
+  scrim: 'rgba(27, 25, 24, 0.3)',
 } as const;
 
 export const spacing = {

@@ -1,5 +1,5 @@
 import { Image, View } from 'react-native';
-import Svg, { Circle, Rect } from 'react-native-svg';
+import Svg, { Rect } from 'react-native-svg';
 import { colors, radii } from '../constants/theme';
 import { identiconFor } from '../lib/identicon';
 import type { PersonRecord } from '../lib/store';
@@ -9,17 +9,20 @@ interface AvatarProps {
   /** Falls back to the person id when the voiceprint has not been assigned yet. */
   seed?: string;
   size?: number;
+  /** Transcript rows use rounded squares, the way Slack does. */
+  shape?: 'circle' | 'rounded';
 }
 
-export function Avatar({ person, seed, size = 40 }: AvatarProps) {
+export function Avatar({ person, seed, size = 40, shape = 'circle' }: AvatarProps) {
   const identiconSeed = person?.voiceprint_id ?? seed ?? person?._id ?? 'unknown';
   const { background, ink, cells } = identiconFor(identiconSeed);
+  const cornerRadius = shape === 'circle' ? size / 2 : size * 0.22;
 
   if (person?.avatar_uri) {
     return (
       <Image
         source={{ uri: person.avatar_uri }}
-        style={{ width: size, height: size, borderRadius: radii.pill, backgroundColor: colors.canvasSunken }}
+        style={{ width: size, height: size, borderRadius: cornerRadius, backgroundColor: colors.canvasSunken }}
       />
     );
   }
@@ -32,7 +35,7 @@ export function Avatar({ person, seed, size = 40 }: AvatarProps) {
   return (
     <View style={{ width: size, height: size }}>
       <Svg width={size} height={size}>
-        <Circle cx={size / 2} cy={size / 2} r={size / 2} fill={background} />
+        <Rect x={0} y={0} width={size} height={size} rx={cornerRadius} fill={background} />
         {cells.map((on, index) => {
           if (!on) return null;
           const row = Math.floor(index / grid);
