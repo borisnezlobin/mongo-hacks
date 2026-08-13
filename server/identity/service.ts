@@ -20,6 +20,7 @@ import {
 
 type Filter = Record<string, unknown>;
 type Update<T> = { $set: Partial<T> };
+type PipelineStage = Record<string, unknown>;
 
 export interface IdentityCollection<T> {
   insertOne(document: T): Promise<unknown>;
@@ -31,10 +32,16 @@ export interface IdentityCollection<T> {
   distinct(key: string, filter: Filter): Promise<unknown[]>;
 }
 
+export interface VoiceprintCollection extends IdentityCollection<Voiceprint> {
+  aggregate<TResult extends object = Voiceprint>(
+    pipeline: PipelineStage[],
+  ): { toArray(): Promise<TResult[]> };
+}
+
 export interface IdentityServiceOptions {
   collections: {
     people: IdentityCollection<Person>;
-    voiceprints: IdentityCollection<Voiceprint>;
+    voiceprints: VoiceprintCollection;
     utterances: IdentityCollection<Utterance>;
     facts: IdentityCollection<Fact>;
     promises: IdentityCollection<PromiseMemory>;
@@ -60,8 +67,47 @@ export interface IdentityService {
   mergePeople(request: MergePeopleRequest): Promise<Person>;
 }
 
-function dotProduct(left: number[], right: number[]): number {
-  return left.reduce((score, component, index) => score + component * (right[index] ?? 0), 0);
+interface VoiceprintMatch extends Voiceprint {
+  score: number;
+}
+
+export function voiceprintSearchPipeline(
+  embedding: number[],
+  personId?: string,
+): PipelineStage[] {
+  return [
+    {
+      $vectorSearch: {
+        index: 'voiceprints_vector',
+        path: 'embedding',
+        queryVector: embedding,
+        filter: {
+          owner_id: OWNER_ID,
+          ...(personId ? { person_id: personId } : {}),
+        },
+        numCandidates: 60,
+        limit: 3,
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        owner_id: 1,
+        person_id: 1,
+        embedding: 1,
+        duration_ms: 1,
+        source_utterance_id: 1,
+        created_at: 1,
+        score: { $meta: 'vectorSearchScore' },
+      },
+    },
+  ];
+}
+
+/** Atlas cosine scores are normalized to [0, 1]; contracts use raw cosine. */
+function rawCosine(atlasScore: number): number {
+  const raw = Math.max(-1, Math.min(1, atlasScore * 2 - 1));
+  return Math.round(raw * 1e12) / 1e12;
 }
 
 export function createIdentityService(_options: IdentityServiceOptions): IdentityService {
@@ -74,12 +120,12 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
         return { status: 'pending', reason: 'below_floor' };
       }
 
-      const voiceprints = await collections.voiceprints.find({ owner_id: OWNER_ID }).toArray();
-      let best: { voiceprint: Voiceprint; confidence: number } | undefined;
-      for (const voiceprint of voiceprints) {
-        const confidence = dotProduct(voiceprint.embedding, input.embedding);
-        if (!best || confidence > best.confidence) best = { voiceprint, confidence };
-      }
+      const [match] = await collections.voiceprints
+        .aggregate<VoiceprintMatch>(voiceprintSearchPipeline(input.embedding))
+        .toArray();
+      const best = match
+        ? { voiceprint: match, confidence: rawCosine(match.score) }
+        : undefined;
 
       if (best && best.confidence >= ATTRIBUTION_THRESHOLD) {
         const person = await collections.people.findOne({
@@ -155,15 +201,12 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
       const owner = await collections.people.findOne({ owner_id: OWNER_ID, is_owner: true });
       if (!owner) return { authorized: false, confidence: 0 };
 
-      const voiceprints = await collections.voiceprints.find({
-        owner_id: OWNER_ID,
-        person_id: owner._id,
-      }).toArray();
-      if (voiceprints.length === 0) return { authorized: false, confidence: 0 };
+      const [match] = await collections.voiceprints
+        .aggregate<VoiceprintMatch>(voiceprintSearchPipeline(embedding, owner._id))
+        .toArray();
+      if (!match) return { authorized: false, confidence: 0 };
 
-      const confidence = Math.max(
-        ...voiceprints.map((voiceprint) => dotProduct(voiceprint.embedding, embedding)),
-      );
+      const confidence = rawCosine(match.score);
       return { authorized: confidence >= OWNER_AUTH_THRESHOLD, confidence };
     },
     async enroll(request) {

@@ -30,7 +30,12 @@ def get_model():
     if _model is None:
         _model = EncoderClassifier.from_hparams(
             source="speechbrain/spkrec-ecapa-voxceleb",
-            savedir=os.path.join(os.path.dirname(__file__), "pretrained/ecapa"),
+            # SpeechBrain downloads into this repository-local ignored cache.
+            # Generated links must not point into one developer's global cache.
+            savedir=os.environ.get(
+                "ECAPA_CACHE_DIR",
+                os.path.join(os.path.dirname(__file__), ".cache/ecapa"),
+            ),
             run_opts={"device": "cpu"},
         )
     return _model

@@ -67,6 +67,17 @@ describe('revisions', () => {
     expect(b.utterances()).toHaveLength(1)
     expect(b.utterances()[0].text).toBe('recognise')
   })
+
+  it('preserves unaffected spans around a partial segment revision', () => {
+    const b = buffer()
+    b.addSegments([{ speaker: 'S0', start_ms: 0, end_ms: 3000 }])
+    b.addSegments([{ speaker: 'S1', start_ms: 1000, end_ms: 2000 }])
+
+    expect(b.speakerFor({ text: 'left', start_ms: 200, end_ms: 400 })).toBe('S0')
+    expect(b.speakerFor({ text: 'middle', start_ms: 1200, end_ms: 1400 })).toBe('S1')
+    expect(b.speakerFor({ text: 'right', start_ms: 2400, end_ms: 2600 })).toBe('S0')
+    expect(b.speechMsFor('S0')).toBe(2000)
+  })
 })
 
 describe('finalization', () => {

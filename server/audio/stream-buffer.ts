@@ -47,7 +47,7 @@ export class StreamBuffer {
    */
   addSegments(incoming: Segment[]): void {
     for (const segment of incoming) {
-      this.segments = this.segments.filter((existing) => !overlaps(existing, segment))
+      this.segments = this.segments.flatMap((existing) => subtractOverlap(existing, segment))
       this.segments.push({ ...segment })
     }
     this.segments.sort((a, b) => a.start_ms - b.start_ms)
@@ -166,6 +166,16 @@ export class StreamBuffer {
   }
 }
 
-function overlaps(a: Segment, b: Segment): boolean {
-  return a.start_ms < b.end_ms && b.start_ms < a.end_ms
+function subtractOverlap(existing: Segment, revision: Segment): Segment[] {
+  if (existing.start_ms >= revision.end_ms || revision.start_ms >= existing.end_ms) {
+    return [existing]
+  }
+  const retained: Segment[] = []
+  if (existing.start_ms < revision.start_ms) {
+    retained.push({ ...existing, end_ms: revision.start_ms })
+  }
+  if (existing.end_ms > revision.end_ms) {
+    retained.push({ ...existing, start_ms: revision.end_ms })
+  }
+  return retained
 }

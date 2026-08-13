@@ -15,6 +15,7 @@ import {
   createIdentityService,
   type IdentityCollection,
   type IdentityService,
+  type VoiceprintCollection,
 } from './service';
 
 export { createIdentityService } from './service';
@@ -22,6 +23,10 @@ export type { IdentityService, IdentityServiceOptions } from './service';
 
 function collection<T>(value: unknown): IdentityCollection<T> {
   return value as IdentityCollection<T>;
+}
+
+function voiceprintCollection(value: unknown): VoiceprintCollection {
+  return value as VoiceprintCollection;
 }
 
 export function registerIdentityRoutes(app: Hono, deps: ServerDependencies): void {
@@ -39,7 +44,7 @@ export function registerIdentityRoutes(app: Hono, deps: ServerDependencies): voi
         return createIdentityService({
           collections: {
             people: collection<Person>(db.collection<Person>('people')),
-            voiceprints: collection<Voiceprint>(db.collection<Voiceprint>('voiceprints')),
+            voiceprints: voiceprintCollection(db.collection<Voiceprint>('voiceprints')),
             utterances: collection<Utterance>(db.collection<Utterance>('utterances')),
             facts: collection<Fact>(db.collection<Fact>('facts')),
             promises: collection<PromiseMemory>(db.collection<PromiseMemory>('promises')),

@@ -27,7 +27,7 @@ async function main() {
     console.log(`ensured collection index ${spec.collection}.${spec.options.name}`);
   }
   for (const spec of config.searchIndexes) await ensureSearchIndex(db, spec);
-  console.log('Atlas bootstrap complete: two vector indexes and one Search index');
+  console.log('Atlas bootstrap complete: facts + voiceprints vector indexes and utterance Search');
 }
 
 main().finally(() => client.close());

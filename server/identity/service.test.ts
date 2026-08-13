@@ -64,6 +64,27 @@ class FakeCollection<T extends { _id: string }> {
         .map((document) => (document as unknown as Record<string, unknown>)[key]),
     )];
   }
+
+  aggregate<TResult extends object>(pipeline: Record<string, unknown>[]) {
+    const vectorStage = pipeline[0].$vectorSearch as {
+      queryVector: number[];
+      filter: Filter;
+      limit: number;
+    };
+    const results = this.documents
+      .filter((document) => matches(document, vectorStage.filter))
+      .map((document) => {
+        const embedding = (document as unknown as { embedding?: number[] }).embedding ?? [];
+        const rawCosine = embedding.reduce(
+          (score, component, index) => score + component * (vectorStage.queryVector[index] ?? 0),
+          0,
+        );
+        return { ...structuredClone(document), score: (rawCosine + 1) / 2 };
+      })
+      .sort((left, right) => right.score - left.score)
+      .slice(0, vectorStage.limit) as unknown as TResult[];
+    return { toArray: async () => results };
+  }
 }
 
 interface InitialCollections {

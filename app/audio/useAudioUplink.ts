@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { requestRecordingPermissionsAsync, useAudioStream } from 'expo-audio';
 import type { AudioStreamBuffer, AudioStreamEncoding, AudioStreamOptions } from 'expo-audio';
 import type { AudioUplink, Id, StreamHandshake } from '../../shared/contracts';
-import { AUDIO_FRAME_SAMPLES } from '../../shared/contracts';
 import { int16ToFloat32, resampleTo16k } from './resample';
+import { AudioFramePacketizer, buildStreamUrl } from './uplink-buffer';
 
 /**
  * expo-audio's `useAudioStream` (verified against
@@ -17,27 +17,6 @@ import { int16ToFloat32, resampleTo16k } from './resample';
  * request.
  */
 const STREAM_ENCODING: AudioStreamEncoding = 'float32';
-
-/** Base API origin, converted from http(s) to ws(s) with the /stream path appended. */
-function buildStreamUrl(): string {
-  const base = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000';
-  const wsBase = base.replace(/^http/, 'ws').replace(/\/$/, '');
-  return `${wsBase}/stream`;
-}
-
-function concatFloat32(a: Float32Array, b: Float32Array): Float32Array {
-  if (a.length === 0) return b;
-  if (b.length === 0) return a;
-  const out = new Float32Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-
-/** Copies a Float32Array frame into a standalone ArrayBuffer sized to exactly its bytes. */
-function frameToArrayBuffer(frame: Float32Array): ArrayBuffer {
-  return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer;
-}
 
 /**
  * Streams the device microphone to Amelia's /stream websocket as uplink-only PCM.
@@ -58,7 +37,7 @@ export default function useAudioUplink(conversationId: string): AudioUplink {
   const captureStartedRef = useRef(false);
   const readyRef = useRef(false);
   const intentionalCloseRef = useRef(false);
-  const pendingRef = useRef<Float32Array<ArrayBufferLike>>(new Float32Array(0));
+  const packetizerRef = useRef(new AudioFramePacketizer());
 
   /** Stops capture and closes the socket. Does not touch React state. */
   const teardown = useCallback(() => {
@@ -83,7 +62,7 @@ export default function useAudioUplink(conversationId: string): AudioUplink {
       captureStartedRef.current = false;
     }
 
-    pendingRef.current = new Float32Array(0);
+    packetizerRef.current.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -103,17 +82,13 @@ export default function useAudioUplink(conversationId: string): AudioUplink {
         ? int16ToFloat32(new Int16Array(buffer.data))
         : new Float32Array(buffer.data);
     const resampled = resampleTo16k(raw, buffer.sampleRate);
-    pendingRef.current = concatFloat32(pendingRef.current, resampled);
-
-    while (pendingRef.current.length >= AUDIO_FRAME_SAMPLES) {
-      const frame = pendingRef.current.subarray(0, AUDIO_FRAME_SAMPLES);
+    for (const frame of packetizerRef.current.push(resampled)) {
       try {
-        socketRef.current.send(frameToArrayBuffer(frame));
+        socketRef.current.send(frame);
       } catch {
         handleFailure();
         return;
       }
-      pendingRef.current = pendingRef.current.slice(AUDIO_FRAME_SAMPLES);
     }
   }, [handleFailure]);
 
@@ -133,6 +108,8 @@ export default function useAudioUplink(conversationId: string): AudioUplink {
   const openSocket = useCallback((id: Id): Promise<WebSocket> => {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(buildStreamUrl());
+      // Store immediately so stop/unmount can cancel a connection in flight.
+      socketRef.current = socket;
       let settled = false;
 
       socket.onopen = () => {
@@ -152,7 +129,10 @@ export default function useAudioUplink(conversationId: string): AudioUplink {
       };
 
       socket.onclose = () => {
-        if (settled && !intentionalCloseRef.current) {
+        if (!settled) {
+          settled = true;
+          reject(new Error('Audio uplink socket closed before connecting'));
+        } else if (!intentionalCloseRef.current) {
           handleFailure();
         }
       };

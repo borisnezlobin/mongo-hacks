@@ -23,6 +23,7 @@ import type { AmeliaBus } from '../lib/bus'
 import { createIdentityService, type IdentityService } from '../identity'
 import { embedPcm } from './embed-client'
 import { FixtureProvider } from './fixture-provider'
+import { OpenAIRealtimeProvider } from './openai-realtime-provider'
 import { AudioSession } from './session'
 import { SAMPLE_RATE, type StreamProvider } from './types'
 
@@ -65,22 +66,30 @@ async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
   return cached
 }
 
-async function providerFor(conversationId: string): Promise<StreamProvider> {
-  // Real pyannote + OpenAI Realtime providers plug in here when keys exist.
-  // Until then every stream — live or replay — joins against the fixture.
-  void conversationId
+async function fixtureProvider(): Promise<StreamProvider> {
   const fixture = JSON.parse(
     await readFile(join(dirname(fileURLToPath(import.meta.url)), '../../fixtures/transcript.json'), 'utf8'),
   ) as { utterances: { speaker: string; text: string; start_ms: number; end_ms: number }[] }
   return new FixtureProvider(fixture.utterances)
 }
 
-async function createSession(conversationId: string, bus: AmeliaBus): Promise<AudioSession> {
+export function liveProvider(env: Record<string, string | undefined> = process.env): StreamProvider {
+  return new OpenAIRealtimeProvider({
+    apiKey: env.OPENAI_API_KEY ?? '',
+    url: env.OPENAI_REALTIME_URL,
+  })
+}
+
+async function createSession(
+  conversationId: string,
+  bus: AmeliaBus,
+  mode: 'live' | 'fixture',
+): Promise<AudioSession> {
   const deps = await audioDeps(bus)
   return new AudioSession({
     conversationId,
     bus,
-    provider: await providerFor(conversationId),
+    provider: mode === 'fixture' ? await fixtureProvider() : liveProvider(),
     identity: deps.identity,
     utterances: deps.utterances,
   })
@@ -99,10 +108,12 @@ async function replayFixture(bus: AmeliaBus, paced: boolean): Promise<{ conversa
     throw new Error(`fixture must be ${SAMPLE_RATE} Hz, got ${audio.sampleRate}`)
   }
   const conversationId = `replay-${Date.now()}`
-  const session = await createSession(conversationId, bus)
-  let emitted = 0
+  const session = await createSession(conversationId, bus, 'fixture')
+  const emitted = new Set<string>()
   const unsubscribe = bus.subscribe((event) => {
-    if (event.type === 'utterance' && event.conversation_id === conversationId) emitted += 1
+    if (event.type === 'utterance' && event.conversation_id === conversationId) {
+      emitted.add(event.utterance_id)
+    }
   })
   try {
     for (let offset = 0; offset < audio.samples.length; offset += FRAME_SAMPLES) {
@@ -114,7 +125,7 @@ async function replayFixture(bus: AmeliaBus, paced: boolean): Promise<{ conversa
   } finally {
     unsubscribe()
   }
-  return { conversation_id: conversationId, utterances_emitted: emitted }
+  return { conversation_id: conversationId, utterances_emitted: emitted.size }
 }
 
 export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
@@ -159,16 +170,24 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
   const wss = new WebSocketServer({ server, path: '/stream' })
   wss.on('connection', (socket) => {
     let session: AudioSession | null = null
+    let helloReceived = false
     let queue: Promise<void> = Promise.resolve()
+    const enqueue = (operation: () => Promise<void>): void => {
+      queue = queue.then(operation).catch((error) => {
+        console.error('stream ingest failed', error)
+        socket.close(1011, 'ingest failed')
+      })
+    }
 
     socket.on('message', (data: RawData, isBinary: boolean) => {
       if (!isBinary) {
-        if (session) return socket.close(1002, 'hello already received')
+        if (helloReceived) return socket.close(1002, 'hello already received')
+        helloReceived = true
         try {
           const hello = JSON.parse(data.toString()) as StreamHandshake
           if (!hello.conversation_id) throw new Error('conversation_id missing')
-          queue = queue.then(async () => {
-            session = await createSession(hello.conversation_id, deps.bus as AmeliaBus)
+          enqueue(async () => {
+            session = await createSession(hello.conversation_id, deps.bus as AmeliaBus, 'live')
           })
         } catch (error) {
           socket.close(1002, `bad hello: ${(error as Error).message}`)
@@ -183,18 +202,14 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
         buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
       )
       // Frames are serialized through a queue so revisions stay ordered.
-      queue = queue.then(async () => {
+      enqueue(async () => {
         if (!session) throw new Error('binary frame before hello')
         await session.pushAudio(pcm)
-      })
-      queue.catch((error) => {
-        console.error('stream ingest failed', error)
-        socket.close(1011, 'ingest failed')
       })
     })
 
     socket.on('close', () => {
-      queue = queue.then(async () => {
+      enqueue(async () => {
         await session?.end()
         session = null
       })

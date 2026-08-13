@@ -81,11 +81,17 @@ export class AudioSession {
     await this.maybeAttribute()
   }
 
-  /** Flush everything at end of stream, then close the provider. */
+  /** Ask the provider to flush its trailing turn, then finalize the result. */
   async end(): Promise<void> {
+    let providerError: unknown
+    try {
+      await this.options.provider.close()
+    } catch (error) {
+      providerError = error
+    }
     await this.finalize(Number.POSITIVE_INFINITY)
     await this.maybeAttribute()
-    await this.options.provider.close()
+    if (providerError) throw providerError
   }
 
   private async finalize(cutoffMs: number): Promise<void> {
