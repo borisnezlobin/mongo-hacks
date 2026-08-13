@@ -12,7 +12,15 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Hono } from 'hono'
 import { MongoClient, type Collection } from 'mongodb'
-import { WebSocketServer, type RawData } from 'ws'
+// `ws` is CommonJS, so Node's ESM loader does not expose its named exports and the value
+// has to be required outright. We destructure `Server`, not `WebSocketServer`: package.json
+// asks for ws@8 but the hoisted install here is ws@7 (Metro depends on it), and only
+// `Server` exists in both majors. Types still come through the named import.
+import { createRequire } from 'node:module'
+import type { RawData, WebSocketServer as WebSocketServerType } from 'ws'
+const { Server: WebSocketServer } = createRequire(import.meta.url)('ws') as {
+  Server: typeof WebSocketServerType
+}
 import {
   AUDIO_FRAME_BYTES,
   type ServerDependencies,
