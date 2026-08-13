@@ -31,7 +31,11 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
   const conversation = state.conversations[conversationId];
   // VAD emits stray fragments — a lone "." or a single stray word. They are noise in a
   // transcript someone is reading, so they are hidden rather than stored differently.
-  const visible = utterances.filter((u) => u.text.replace(/[^a-zA-Z0-9]/g, '').length > 1);
+  const visible = utterances
+    .filter((u) => u.text.replace(/[^a-zA-Z0-9]/g, '').length > 1)
+    // The provider sometimes emits the same sentence twice under different ids; showing it
+    // twice makes the transcript look broken.
+    .filter((u, i, all) => i === 0 || all[i - 1].text.trim() !== u.text.trim());
   const scrollRef = useRef<ScrollView>(null);
 
   const [editingTitle, setEditingTitle] = useState(false);
@@ -47,11 +51,16 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     : null;
 
   // New turns should pull the view down only while the conversation is actually live.
+  const lastCount = useRef(0);
   useEffect(() => {
-    if (!isLive) return;
+    const grew = visible.length > lastCount.current;
+    lastCount.current = visible.length;
+    // Polling re-renders constantly; scrolling on every render yanked the view even when
+    // nothing new had arrived. Only a genuinely longer transcript pulls you down.
+    if (!isLive || !grew) return;
     const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     return () => clearTimeout(timer);
-  }, [visible.length, ameliaTurn?.steps.length, ameliaTurn?.reply, isLive]);
+  }, [visible.length, isLive]);
 
   /**
    * Hydrate on open, then keep polling while the conversation is live.
@@ -157,7 +166,11 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
         {visible.map((utterance, index) => {
           const person = utterance.person_id ? state.people[utterance.person_id] : undefined;
           const previous = visible[index - 1];
-          const showHeader = !previous || previous.person_id !== utterance.person_id;
+          // Unattributed turns never share a header. Grouping them implied consecutive
+          // unknown turns came from one person, so someone else's line appeared under the
+          // previous speaker's name — the transcript asserting something it does not know.
+          const showHeader =
+            !previous || !utterance.person_id || previous.person_id !== utterance.person_id;
           // One naming affordance per run of turns, on the first of the run. Keying it on
           // the utterance id gave every message its own button, because unresolved speakers
           // share neither a person id nor a voiceprint id to group on.
