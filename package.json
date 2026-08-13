@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "bun@1.3.14",
-  "workspaces": ["app", "server"],
+  "workspaces": [
+    "app",
+    "server"
+  ],
   "scripts": {
     "dev": "npm run dev --workspace=@amelia/server",
     "dev:app": "npm run start --workspace=@amelia/app",

@@ -18,6 +18,14 @@
       "@app/*": ["app/*"]
     }
   },
-  "include": ["shared/**/*.ts", "server/**/*.ts", "app/**/*.ts", "app/**/*.tsx", "tests/**/*.ts"],
+  "include": [
+    "shared/**/*.ts",
+    "server/**/*.ts",
+    "db/**/*.ts",
+    "db/**/*.mts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "tests/**/*.ts"
+  ],
   "exclude": ["node_modules"]
 }
