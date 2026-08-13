@@ -108,7 +108,11 @@ async function createSession(
  * paced=true streams in realtime for demos; the default runs as fast as the
  * pipeline drains, for gates and tests.
  */
-async function replayFixture(bus: AmeliaBus, paced: boolean): Promise<{ conversation_id: string; utterances_emitted: number }> {
+async function replayFixture(
+  bus: AmeliaBus,
+  paced: boolean,
+  mode: 'live' | 'fixture' = 'fixture',
+): Promise<{ conversation_id: string; utterances_emitted: number }> {
   const wavBytes = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../../fixtures/conversation.wav'))
   const { readWav } = await import('./wav')
   const audio = readWav(wavBytes)
@@ -116,7 +120,7 @@ async function replayFixture(bus: AmeliaBus, paced: boolean): Promise<{ conversa
     throw new Error(`fixture must be ${SAMPLE_RATE} Hz, got ${audio.sampleRate}`)
   }
   const conversationId = `replay-${Date.now()}`
-  const session = await createSession(conversationId, bus, 'fixture')
+  const session = await createSession(conversationId, bus, mode)
   const emitted = new Set<string>()
   const unsubscribe = bus.subscribe((event) => {
     if (event.type === 'utterance' && event.conversation_id === conversationId) {
@@ -139,7 +143,11 @@ async function replayFixture(bus: AmeliaBus, paced: boolean): Promise<{ conversa
 export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
   app.post('/replay/start', async (context) => {
     const paced = context.req.query('paced') === '1'
-    const result = await replayFixture(deps.bus as AmeliaBus, paced)
+    // provider=live runs the fixture audio through the real transcription
+    // path instead of the canned transcript, which exercises everything a
+    // phone would exercise without needing a microphone in the room.
+    const mode = context.req.query('provider') === 'live' ? 'live' : 'fixture'
+    const result = await replayFixture(deps.bus as AmeliaBus, paced, mode)
     return context.json(result, 200)
   })
 
