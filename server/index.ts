@@ -41,6 +41,10 @@ export function createApp() {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
+      // Reverse proxies (Cloudflare tunnels, nginx) buffer responses by default, which
+      // holds every event until the stream closes — the app then shows no live transcript
+      // at all. This is the conventional opt-out and costs nothing when served directly.
+      'X-Accel-Buffering': 'no',
     },
   }));
   app.post('/debug/utterance', async (context) => {
