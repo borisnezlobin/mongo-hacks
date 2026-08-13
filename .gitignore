@@ -7,3 +7,10 @@ dist/
 __pycache__/
 .venv/
 sidecar/.cache/
+
+# Downloaded ECAPA weights, roughly 80 MB. Fetched on first sidecar run.
+sidecar/pretrained/
+
+# Generated native projects. Recreate with expo prebuild.
+app/ios/
+app/android/
