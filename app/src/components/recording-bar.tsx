@@ -68,10 +68,26 @@ interface RecordingBarProps {
 export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarProps) {
   const streaming = uplink.state === 'streaming';
   const connecting = uplink.state === 'connecting';
+  const failed = uplink.state === 'error';
   const elapsed = useElapsedSeconds(streaming);
+  const [failure, setFailure] = useState<string | null>(null);
 
-  const label = streaming ? formatClock(elapsed) : connecting ? 'Connecting' : 'Start listening';
-  const helper = streaming ? 'Amelia is listening' : connecting ? 'Opening the mic' : 'Tap to capture this conversation';
+  const label = streaming
+    ? formatClock(elapsed)
+    : connecting
+      ? 'Connecting'
+      : failed
+        ? "Couldn't start"
+        : 'Start listening';
+  // A failed start used to fall through to the idle copy, so the bar just flickered and
+  // said "Start listening" again. Showing the real reason turns a mystery into an action.
+  const helper = streaming
+    ? 'Amelia is listening'
+    : connecting
+      ? 'Opening the mic'
+      : failed
+        ? (failure ?? 'Tap to try again')
+        : 'Tap to capture this conversation';
 
   return (
     <View style={[styles.wrapper, { bottom: bottomOffset }]} pointerEvents="box-none">
@@ -80,11 +96,20 @@ export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarP
           accessibilityRole="button"
           accessibilityLabel={streaming ? 'Stop listening' : 'Start listening'}
           onPress={() => {
-            // start()/stop() reject when the uplink socket cannot reach the server. The
-            // hook already reflects that in its own state, so swallow it here rather than
-            // letting it surface as an unhandled rejection redbox.
-            const action = streaming ? uplink.stop() : uplink.start();
-            void Promise.resolve(action).catch(() => {});
+            // start()/stop() reject when permission is refused or the socket cannot reach
+            // the server. Keep the reason and show it, rather than letting it surface as an
+            // unhandled rejection redbox or vanish into the idle state.
+            if (streaming) {
+              void Promise.resolve(uplink.stop()).catch(() => {});
+              return;
+            }
+            setFailure(null);
+            void Promise.resolve(uplink.start()).catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              setFailure(/permission/i.test(message)
+                ? 'Microphone permission denied. Enable it in Settings › Amelia.'
+                : message);
+            });
           }}
           disabled={connecting}
           style={({ pressed }) => [styles.trigger, streaming && styles.triggerLive, pressed && styles.pressed]}
@@ -95,8 +120,8 @@ export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarP
         </Pressable>
 
         <Pressable style={styles.copy} onPress={onOpenLive} disabled={!streaming}>
-          <AppText variant="bodyStrong" color={streaming ? colors.live : colors.ink}>{label}</AppText>
-          <AppText variant="caption">{helper}</AppText>
+          <AppText variant="bodyStrong" color={streaming || failed ? colors.live : colors.ink}>{label}</AppText>
+          <AppText variant="caption" numberOfLines={2}>{helper}</AppText>
         </Pressable>
 
         {streaming ? <LiveWaveform /> : null}

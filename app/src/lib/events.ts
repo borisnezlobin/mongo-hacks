@@ -1,6 +1,6 @@
 import EventSource from 'react-native-sse';
 import type { AmeliaEvent, BusEventName } from '../../../shared/contracts';
-import { API_BASE_URL, FORCE_MOCK, HEALTH_TIMEOUT_MS } from './config';
+import { API_BASE_URL, FORCE_MOCK, HEALTH_TIMEOUT_MS, MOCK_ENABLED } from './config';
 import { startMockStream, type MockStreamOptions } from './mock-sse';
 
 const EVENT_NAMES: BusEventName[] = [
@@ -77,7 +77,7 @@ export function subscribeToEvents(
   const fallBackToMock = () => {
     if (stopped) return;
     closeSource();
-    if (!mock) {
+    if (MOCK_ENABLED && !mock) {
       onSource('mock');
       mock = startMockStream(onEvent, mockOptions);
     }
