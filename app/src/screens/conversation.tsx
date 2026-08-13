@@ -7,6 +7,7 @@ import { AmeliaMessage } from '../components/amelia-message';
 import { Chip } from '../components/ui';
 import { UtteranceRow } from '../components/utterance-row';
 import { colors, layout, radii, spacing } from '../constants/theme';
+import { api } from '../lib/api';
 import { formatDay } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
 import {
@@ -23,7 +24,7 @@ interface ConversationScreenProps {
 }
 
 export function ConversationScreen({ conversationId, onNamePerson, contentInset }: ConversationScreenProps) {
-  const { state, renameConversation } = useStore();
+  const { state, renameConversation, ingest } = useStore();
   const navigation = useNavigation();
   const utterances = useConversationUtterances(conversationId);
   const conversation = state.conversations[conversationId];
@@ -47,6 +48,34 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     return () => clearTimeout(timer);
   }, [utterances.length, ameliaTurn?.steps.length, ameliaTurn?.reply, isLive]);
+
+  // SSE only carries what happens while the app is open, so a reload used to look like the
+  // transcript had been deleted. Hydrate from the server on open; the store keys utterances
+  // by id, so anything the live stream already delivered is replaced, not duplicated.
+  useEffect(() => {
+    let cancelled = false;
+    void api.getConversation(conversationId)
+      .then((summary) => {
+        if (cancelled) return;
+        for (const utterance of summary.utterances) {
+          ingest({
+            type: 'utterance',
+            utterance_id: utterance._id,
+            conversation_id: utterance.conversation_id,
+            person_id: utterance.person_id,
+            voiceprint_id: utterance.voiceprint_id,
+            text: utterance.text,
+            start_ms: utterance.start_ms,
+            end_ms: utterance.end_ms,
+            is_final: utterance.is_final,
+          });
+        }
+      })
+      .catch(() => {
+        // Offline or not yet persisted: the live stream is still the source of truth.
+      });
+    return () => { cancelled = true; };
+  }, [conversationId, ingest]);
 
   const commitTitle = () => {
     renameConversation(conversationId, draftTitle);
@@ -113,6 +142,10 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
           const person = utterance.person_id ? state.people[utterance.person_id] : undefined;
           const previous = utterances[index - 1];
           const showHeader = !previous || previous.person_id !== utterance.person_id;
+          // One naming affordance per speaker, on their first turn — not one per message.
+          const speakerKey = utterance.person_id ?? utterance.voiceprint_id ?? utterance._id;
+          const isFirstTurnForSpeaker =
+            utterances.findIndex((u) => (u.person_id ?? u.voiceprint_id ?? u._id) === speakerKey) === index;
           return (
             <UtteranceRow
               key={utterance._id}
@@ -123,7 +156,7 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
               // Unattributed turns still need a way in, so synthesise a person record from
               // the voiceprint. Without this the speaker Amelia has not resolved yet — often
               // the owner's own voice — was the one row you could not name.
-              onName={() => onNamePerson(person ?? {
+              onName={!isFirstTurnForSpeaker ? undefined : () => onNamePerson(person ?? {
                 _id: utterance.person_id ?? utterance.voiceprint_id ?? utterance._id,
                 owner_id: conversation.owner_id,
                 name: '',
