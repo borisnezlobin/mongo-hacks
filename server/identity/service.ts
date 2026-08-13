@@ -116,7 +116,11 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
 
   return {
     async attributeSpeaker(input) {
-      if (input.duration_ms < EMBED_MIN_MS) {
+      // Tunable at the venue: the contract floor is the safe default, but a room where
+      // people talk in short turns produces almost no attributions at 3s. Lower it to trade
+      // voiceprint confidence for coverage.
+      const embedFloorMs = Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS)
+      if (input.duration_ms < embedFloorMs) {
         return { status: 'pending', reason: 'below_floor' };
       }
 
@@ -127,7 +131,8 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
         ? { voiceprint: match, confidence: rawCosine(match.score) }
         : undefined;
 
-      if (best && best.confidence >= ATTRIBUTION_THRESHOLD) {
+      const threshold = Number(process.env.ATTRIBUTION_THRESHOLD ?? ATTRIBUTION_THRESHOLD)
+      if (best && best.confidence >= threshold) {
         const person = await collections.people.findOne({
           _id: best.voiceprint.person_id,
           owner_id: OWNER_ID,
