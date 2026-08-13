@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import {
   ArrowUpIcon,
@@ -12,6 +12,7 @@ import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
 import { Card, Chip, EmptyState, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
+import { api } from '../lib/api';
 import { useAsk } from '../lib/ask';
 import { formatDay, formatDuration } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
@@ -23,7 +24,7 @@ interface HomeScreenProps {
 }
 
 export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
-  const { state, dismissUnknownCard } = useStore();
+  const { state, dismissUnknownCard, ingest } = useStore();
   const conversations = useConversations();
   const unknown = useUnknownPeople();
   const navigation = useNavigation();
@@ -36,6 +37,38 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
   );
 
   const showUnknownCard = unknown.length > 0 && !state.unknownCardDismissed;
+
+  // Recent conversations came only from what this app instance had seen, so past
+  // recordings were invisible after a restart. Pull the server's list and hydrate each
+  // one's turns; utterances are keyed by id, so re-seeing them is a no-op.
+  useEffect(() => {
+    let cancelled = false;
+    void api.listConversations()
+      .then(async (conversations) => {
+        for (const conversation of conversations.slice(0, 8)) {
+          if (cancelled) return;
+          const summary = await api.getConversation(conversation._id).catch(() => null);
+          if (!summary || cancelled) continue;
+          for (const utterance of summary.utterances) {
+            ingest({
+              type: 'utterance',
+              utterance_id: utterance._id,
+              conversation_id: utterance.conversation_id,
+              person_id: utterance.person_id,
+              voiceprint_id: utterance.voiceprint_id,
+              text: utterance.text,
+              start_ms: utterance.start_ms,
+              end_ms: utterance.end_ms,
+              is_final: utterance.is_final,
+            });
+          }
+        }
+      })
+      .catch(() => {
+        // No server yet: seeded and live data still render.
+      });
+    return () => { cancelled = true; };
+  }, [ingest]);
 
   const submit = () => {
     ask(query);
