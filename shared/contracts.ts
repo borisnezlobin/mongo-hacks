@@ -7,8 +7,15 @@ export const FAST_PASS_LOOKBACK_TURNS = 8;
 export const SLOW_PASS_EVERY_N_UTTERANCES = 25;
 export const AMELIA_MAX_TOOL_CALLS = 5;
 export const SSE_DEBOUNCE_MS = 200;
-export const VOYAGE_MODEL = 'voyage-3.5-lite';
-export const VOYAGE_DIMS = 1024;
+/**
+ * Inference runs on Fireworks (OpenAI-compatible endpoints) for both extraction
+ * and embeddings. EMBEDDING_DIMS is baked into the applied Atlas vector index —
+ * verify it against the live model with `npx tsx db/probe-embeddings.ts` before
+ * applying indexes, because the three-index cap means there is no second try.
+ */
+export const EXTRACTION_MODEL = 'accounts/fireworks/models/gpt-oss-120b';
+export const EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
+export const EMBEDDING_DIMS = 768;
 export const VOICEPRINT_DIMS = 192;
 
 export type Id = string;
@@ -80,6 +87,8 @@ export interface PromiseMemory {
   text: string;
   text_normalized: string;
   due_at?: Timestamp;
+  /** The speaker's own wording ("tonight"), kept beside the resolved ISO date. */
+  due_phrase?: string;
   embedding?: number[];
   status: 'open' | 'done' | 'cancelled';
   created_at: Timestamp;
