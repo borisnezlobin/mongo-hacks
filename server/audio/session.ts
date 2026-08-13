@@ -168,7 +168,7 @@ export class AudioSession {
    */
   private async maybeAttribute(): Promise<void> {
     if (!this.options.identity) return
-    for (const speaker of this.buffer.speakersOverFloor(EMBED_MIN_MS)) {
+    for (const speaker of this.buffer.speakersOverFloor(Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS))) {
       if (speaker === UNKNOWN_SPEAKER || this.resolved.has(speaker) || this.resolving.has(speaker)) {
         continue
       }
