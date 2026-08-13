@@ -80,6 +80,8 @@ export interface PromiseMemory {
   text: string;
   text_normalized: string;
   due_at?: Timestamp;
+  /** The speaker's own wording ("tonight"), kept beside the resolved ISO date. */
+  due_phrase?: string;
   embedding?: number[];
   status: 'open' | 'done' | 'cancelled';
   created_at: Timestamp;
