@@ -23,39 +23,39 @@
       "speaker": "Jules",
       "text": "Maya loves Ethiopian food, and me too.",
       "start_ms": 7677,
-      "end_ms": 10351
+      "end_ms": 10697
     },
     {
       "utterance_id": "u4",
       "person_id": "p-priya",
       "speaker": "Priya",
       "text": "I'm Priya. I met Yan at the MongoDB hackathon today.",
-      "start_ms": 10701,
-      "end_ms": 14221
+      "start_ms": 11047,
+      "end_ms": 14566
     },
     {
       "utterance_id": "u5",
       "person_id": "p-maya",
       "speaker": "Maya",
       "text": "Actually my move date changed to September fifteenth.",
-      "start_ms": 14571,
-      "end_ms": 17702
+      "start_ms": 14916,
+      "end_ms": 18048
     },
     {
       "utterance_id": "u6",
       "person_id": "p-jules",
       "speaker": "Jules",
       "text": "I promise I'll send Yan the venue photos tonight.",
-      "start_ms": 18052,
-      "end_ms": 20812
+      "start_ms": 18398,
+      "end_ms": 21604
     },
     {
       "utterance_id": "u7",
       "person_id": "p-amelia-owner",
       "speaker": "Amelia's owner",
       "text": "Amelia, what should I remember about Maya?",
-      "start_ms": 21162,
-      "end_ms": 23591
+      "start_ms": 21954,
+      "end_ms": 24384
     }
   ]
 }

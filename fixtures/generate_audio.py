@@ -8,10 +8,13 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# Voice choice is load-bearing: ECAPA cannot separate same-engine macOS
+# voices (Samantha x Alex cosine ran 0.80+, inside the within-speaker range).
+# These four measure well apart at the utterance level.
 VOICE_BY_SPEAKER = {
     "Amelia's owner": "Daniel",
     "Maya": "Samantha",
-    "Jules": "Alex",
+    "Jules": "Fred",
     "Priya": "Rishi",
 }
 SAMPLE_RATE = 16_000
