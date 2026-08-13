@@ -23,6 +23,7 @@ const { WebSocketServer } = createRequire(import.meta.url)('ws') as {
 }
 import {
   AUDIO_FRAME_BYTES,
+  OWNER_ID,
   type ServerDependencies,
   type StreamHandshake,
   type Utterance,
@@ -41,6 +42,7 @@ interface AudioDeps {
   bus: AmeliaBus
   identity: IdentityService | null
   utterances: Collection<Utterance> | null
+  conversations: Collection<{ _id: string }> | null
 }
 
 let cached: Promise<AudioDeps> | null = null
@@ -55,7 +57,7 @@ async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
     const uri = process.env.MONGODB_URI
     if (!uri) {
       console.warn('MONGODB_URI not set: audio sessions run emit-only, identity disabled')
-      return { bus, identity: null, utterances: null }
+      return { bus, identity: null, utterances: null, conversations: null }
     }
     const client = await new MongoClient(uri).connect()
     const db = client.db()
@@ -69,7 +71,12 @@ async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
       },
       bus,
     })
-    return { bus, identity, utterances: db.collection<Utterance>('utterances') }
+    return {
+      bus,
+      identity,
+      utterances: db.collection<Utterance>('utterances'),
+      conversations: db.collection<{ _id: string }>('conversations'),
+    }
   })()
   return cached
 }
@@ -94,6 +101,19 @@ async function createSession(
   mode: 'live' | 'fixture',
 ): Promise<AudioSession> {
   const deps = await audioDeps(bus)
+  // Sessions wrote utterances but never a conversation document, so GET /conversations
+  // only ever returned the seeded ones and recordings were invisible in the app's list.
+  await deps.conversations?.updateOne(
+    { _id: conversationId },
+    {
+      $setOnInsert: {
+        owner_id: OWNER_ID,
+        started_at: new Date().toISOString(),
+        participant_ids: [],
+      },
+    },
+    { upsert: true },
+  ).catch(() => {})
   return new AudioSession({
     conversationId,
     bus,

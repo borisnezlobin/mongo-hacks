@@ -8,6 +8,7 @@ import { Chip } from '../components/ui';
 import { UtteranceRow } from '../components/utterance-row';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { api } from '../lib/api';
+import { TRANSCRIPT_POLL_MS } from '../lib/config';
 import { formatDay } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
 import {
@@ -52,33 +53,45 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     return () => clearTimeout(timer);
   }, [visible.length, ameliaTurn?.steps.length, ameliaTurn?.reply, isLive]);
 
-  // SSE only carries what happens while the app is open, so a reload used to look like the
-  // transcript had been deleted. Hydrate from the server on open; the store keys utterances
-  // by id, so anything the live stream already delivered is replaced, not duplicated.
+  /**
+   * Hydrate on open, then keep polling while the conversation is live.
+   *
+   * SSE alone is not dependable in front of an audience: many reverse proxies (Cloudflare
+   * tunnels among them) buffer event streams and release nothing until the stream closes,
+   * which shows up as a recording that produces no transcript at all. Polling the same
+   * REST endpoint is plain request/response, so it survives any proxy. Utterances are keyed
+   * by id, so whichever path delivers a turn first wins and the other is a no-op.
+   */
   useEffect(() => {
     let cancelled = false;
-    void api.getConversation(conversationId)
-      .then((summary) => {
-        if (cancelled) return;
-        for (const utterance of summary.utterances) {
-          ingest({
-            type: 'utterance',
-            utterance_id: utterance._id,
-            conversation_id: utterance.conversation_id,
-            person_id: utterance.person_id,
-            voiceprint_id: utterance.voiceprint_id,
-            text: utterance.text,
-            start_ms: utterance.start_ms,
-            end_ms: utterance.end_ms,
-            is_final: utterance.is_final,
-          });
-        }
-      })
-      .catch(() => {
-        // Offline or not yet persisted: the live stream is still the source of truth.
-      });
-    return () => { cancelled = true; };
-  }, [conversationId, ingest]);
+
+    const pull = async () => {
+      const summary = await api.getConversation(conversationId).catch(() => null);
+      if (!summary || cancelled) return;
+      for (const utterance of summary.utterances) {
+        ingest({
+          type: 'utterance',
+          utterance_id: utterance._id,
+          conversation_id: utterance.conversation_id,
+          person_id: utterance.person_id,
+          voiceprint_id: utterance.voiceprint_id,
+          text: utterance.text,
+          start_ms: utterance.start_ms,
+          end_ms: utterance.end_ms,
+          is_final: utterance.is_final,
+        });
+      }
+    };
+
+    void pull();
+    if (!isLive) return () => { cancelled = true; };
+
+    const interval = setInterval(() => void pull(), TRANSCRIPT_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [conversationId, ingest, isLive]);
 
   const commitTitle = () => {
     renameConversation(conversationId, draftTitle);
