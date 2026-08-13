@@ -15,3 +15,6 @@ export const FORCE_MOCK = process.env.EXPO_PUBLIC_FORCE_MOCK === '1';
 export const MOCK_ENABLED = FORCE_MOCK;
 
 export const HEALTH_TIMEOUT_MS = 2_500;
+
+/** How often the conversation view re-pulls turns while recording, as an SSE backstop. */
+export const TRANSCRIPT_POLL_MS = 1_500;
