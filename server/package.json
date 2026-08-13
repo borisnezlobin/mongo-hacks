@@ -6,5 +6,8 @@
   "scripts": {
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
   }
 }
