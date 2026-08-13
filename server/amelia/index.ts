@@ -40,10 +40,11 @@ async function respond(
   inFlight = controller;
 
   const requestId: Id = crypto.randomUUID();
-  const emit = (event: Parameters<typeof deps.bus.emit>[0]) => deps.bus.emit(event);
-  const { step } = createStepper(requestId, emit);
+  // ONE stepper per request, shared with the loop, so the trace returned to the
+  // caller is the same trace that went out over the bus.
+  const stepper = createStepper(requestId, (event) => deps.bus.emit(event));
 
-  step(source === 'voice' ? 'wake' : 'authorize', 'Heard the request');
+  stepper.step(source === 'voice' ? 'wake' : 'authorize', 'Heard the request');
   console.log(`[amelia] (${source}) ${command}`);
 
   try {
@@ -51,14 +52,20 @@ async function respond(
       requestId,
       command,
       memory: deps.memory,
-      emit,
+      stepper,
       signal: controller.signal,
     });
 
-    if (result.refused) return result;
+    if (result.aborted) return null;
+    if (result.refused || result.truncated) return result;
 
     if (result.text) {
+      // Re-check before speaking. runAmelia's abort checks cover the loop, but
+      // TTS is a fresh round-trip afterwards — without this a superseded run
+      // still emits amelia_audio and the phone plays the stale answer aloud.
       const spoken = await speak(result.text);
+      if (controller.signal.aborted) return null;
+
       const event: AmeliaAudioEvent = {
         type: 'amelia_audio',
         request_id: requestId,
@@ -75,7 +82,7 @@ async function respond(
     if (controller.signal.aborted) return null;
     const detail = error instanceof Error ? error.message : String(error);
     console.error('[amelia] failed:', detail);
-    step('error', detail);
+    stepper.step('error', detail);
     throw error;
   } finally {
     if (inFlight === controller) inFlight = null;
@@ -94,7 +101,13 @@ export function registerAmeliaRoutes(
     if (!utterance.is_final) return;
     const match = detectWake(utterance, options.ownerConfidenceFor?.(utterance));
     if (!match) return;
-    void respond(deps, match.command, 'voice').catch(() => {});
+
+    // Defer: respond() emits its first step synchronously, and we are still
+    // inside bus.emit's dispatch loop. Without this, SSE clients receive the
+    // step BEFORE the utterance that triggered it.
+    queueMicrotask(() => {
+      void respond(deps, match.command, 'voice').catch(() => {});
+    });
   });
 
   // ---- press-and-hold manual summon ---------------------------------------
@@ -109,6 +122,9 @@ export function registerAmeliaRoutes(
 
     const result = await respond(deps, text, 'manual');
     if (!result) return context.json({ error: 'superseded by a newer summon' }, 409);
+    if (result.truncated) {
+      return context.json({ ...result, error: 'reply truncated before completion' }, 503);
+    }
     return context.json(result);
   });
 

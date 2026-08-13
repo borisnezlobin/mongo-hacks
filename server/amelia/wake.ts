@@ -39,16 +39,16 @@ export function detectWake(u: UtteranceEvent, ownerConfidence?: number): WakeMat
   // Command = wake phrase → end of turn. Slice the ORIGINAL text so casing and
   // punctuation survive into the prompt.
   //
-  // Map each normalized word back to a character offset rather than counting
-  // words in both strings: a bare punctuation token ("--") is a word in the
-  // original but vanishes under normalize(), so the two counts drift apart and
-  // the slice lands mid-command.
+  // Match alphanumeric runs directly against the original string. This is the
+  // same word sequence normalize() produces (it maps every non-alphanumeric
+  // char to a separator), but each word keeps its TRUE character offset.
+  //
+  // Do not go via normalize()-then-split: splitting a whitespace token gives
+  // every sub-word that token's end offset, so "Amelia—remind me" cuts at the
+  // end of "Amelia—remind" and silently eats the verb.
   const words: { word: string; end: number }[] = [];
-  for (const m of u.text.matchAll(/\S+/g)) {
-    const end = m.index + m[0].length;
-    for (const part of normalize(m[0]).split(' ')) {
-      if (part) words.push({ word: part, end });
-    }
+  for (const m of u.text.matchAll(/[\p{L}\p{N}]+/gu)) {
+    words.push({ word: m[0].toLowerCase(), end: m.index + m[0].length });
   }
 
   const wake = WAKE_PHRASE.split(' ');
