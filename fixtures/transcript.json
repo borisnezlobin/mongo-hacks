@@ -1,0 +1,12 @@
+{
+  "conversation_id": "demo-conversation",
+  "utterances": [
+    {"utterance_id":"u1","person_id":"p-amelia-owner","speaker":"Amelia's owner","text":"I'm Yan. I build products that help people stay close.","start_ms":0,"end_ms":4700},
+    {"utterance_id":"u2","person_id":"p-maya","speaker":"Maya","text":"I'm Maya, and I move to Oakland on September first.","start_ms":5000,"end_ms":9300},
+    {"utterance_id":"u3","person_id":"p-jules","speaker":"Jules","text":"Maya loves Ethiopian food, and me too.","start_ms":9700,"end_ms":13200},
+    {"utterance_id":"u4","person_id":"p-priya","speaker":"Priya","text":"I'm Priya. I met Yan at the MongoDB hackathon today.","start_ms":13600,"end_ms":17800},
+    {"utterance_id":"u5","person_id":"p-maya","speaker":"Maya","text":"Actually my move date changed to September fifteenth.","start_ms":18200,"end_ms":22200},
+    {"utterance_id":"u6","person_id":"p-jules","speaker":"Jules","text":"I promise I'll send Yan the venue photos tonight.","start_ms":22600,"end_ms":26800},
+    {"utterance_id":"u7","person_id":"p-amelia-owner","speaker":"Amelia's owner","text":"Amelia, what should I remember about Maya?","start_ms":27300,"end_ms":31000}
+  ]
+}

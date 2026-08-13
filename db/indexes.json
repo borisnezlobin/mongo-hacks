@@ -1,0 +1,66 @@
+{
+  "searchIndexes": [
+    {
+      "collection": "facts",
+      "name": "facts_vector",
+      "type": "vectorSearch",
+      "definition": {
+        "fields": [
+          {"type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine"},
+          {"type": "filter", "path": "owner_id"},
+          {"type": "filter", "path": "person_id"}
+        ]
+      }
+    },
+    {
+      "collection": "promises",
+      "name": "promises_vector",
+      "type": "vectorSearch",
+      "definition": {
+        "fields": [
+          {"type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine"},
+          {"type": "filter", "path": "owner_id"},
+          {"type": "filter", "path": "person_id"}
+        ]
+      }
+    },
+    {
+      "collection": "utterances",
+      "name": "utterances_text",
+      "type": "search",
+      "definition": {
+        "mappings": {
+          "dynamic": false,
+          "fields": {
+            "text": {"type": "string", "analyzer": "lucene.standard"},
+            "owner_id": {"type": "token"},
+            "person_id": {"type": "token"},
+            "conversation_id": {"type": "token"}
+          }
+        }
+      }
+    }
+  ],
+  "collectionIndexes": [
+    {
+      "collection": "facts",
+      "keys": {"owner_id": 1, "primary_source_utterance_id": 1, "claim_normalized": 1},
+      "options": {"name": "facts_idempotency", "unique": true}
+    },
+    {
+      "collection": "promises",
+      "keys": {"owner_id": 1, "source_utterance_id": 1, "text_normalized": 1},
+      "options": {"name": "promises_idempotency", "unique": true}
+    },
+    {
+      "collection": "voiceprints",
+      "keys": {"owner_id": 1, "person_id": 1},
+      "options": {"name": "voiceprints_by_person"}
+    },
+    {
+      "collection": "utterances",
+      "keys": {"owner_id": 1, "conversation_id": 1, "start_ms": 1},
+      "options": {"name": "conversation_timeline"}
+    }
+  ]
+}

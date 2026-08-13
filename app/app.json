@@ -1,0 +1,31 @@
+{
+  "expo": {
+    "name": "Amelia",
+    "slug": "amelia",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "amelia",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.amelia.context",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Amelia listens to conversations you choose to remember."
+      }
+    },
+    "android": {
+      "package": "com.amelia.context",
+      "permissions": [
+        "RECORD_AUDIO",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "plugins": [
+      "expo-audio",
+      "expo-notifications",
+      "expo-image-picker",
+      "expo-status-bar",
+      "expo-asset"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+Amelia Lane 0 checkpoint
+
+[complete] Frozen scaffold, contracts, fixtures, event bus, and Atlas bootstrap
+[complete] Install all lane dependencies and freeze lockfile
+[complete] Generate and verify conversation.wav
+[complete] Typecheck, test fixture replay, and Expo dependency validation
+[blocked externally] Apply Atlas indexes (MONGODB_URI is not present)
+
+Out of scope by user direction: Lanes A-E implementation.
