@@ -18,6 +18,7 @@ import {
   seedPromises,
   seedUtterances,
 } from './seed';
+import { MOCK_ENABLED } from './config';
 
 export interface PersonRecord extends Person {
   avatar_uri?: string;
@@ -53,7 +54,8 @@ type Action =
   | { kind: 'rename-conversation'; conversationId: Id; title: string }
   | { kind: 'dismiss-unknown-card' }
   | { kind: 'set-live-conversation'; conversationId: Id | null }
-  | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id };
+  | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id }
+  | { kind: 'upsert-conversations'; conversations: Conversation[] };
 
 const UNNAMED_PATTERN = /^(unknown|unnamed|speaker\b)/i;
 
@@ -73,17 +75,36 @@ function byId<T extends { _id: Id }>(items: T[]): Record<Id, T> {
   return Object.fromEntries(items.map((item) => [item._id, item]));
 }
 
-export function createInitialState(): AmeliaState {
+/**
+ * Real data only. The seeded people and conversations existed to build the UI before the
+ * server did; now that recordings are real, shipping them means invented people (Maya,
+ * Priya) sit alongside actual speakers and fixture conversations render as empty shells,
+ * which is worse than an empty app. They are opt-in via EXPO_PUBLIC_FORCE_MOCK.
+ */
+export function createInitialState(withSeed: boolean = MOCK_ENABLED): AmeliaState {
+  const empty: AmeliaState = {
+    people: {},
+    facts: {},
+    promises: {},
+    utterances: {},
+    conversations: {},
+    amelia: null,
+    liveConversationId: null,
+    unknownCardDismissed: false,
+  };
+  if (!withSeed) return empty;
   return {
+    ...empty,
     people: byId(seedPeople as PersonRecord[]),
     facts: byId(seedFacts),
     promises: byId(seedPromises),
     utterances: byId(seedUtterances),
     conversations: byId(seedConversations),
-    amelia: null,
-    liveConversationId: null,
-    unknownCardDismissed: false,
   };
+}
+
+function titleFor(startedAt: string): string {
+  return `Conversation, ${new Date(startedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
 function ensureConversation(state: AmeliaState, conversationId: Id, timestamp: string): Conversation {
@@ -92,7 +113,7 @@ function ensureConversation(state: AmeliaState, conversationId: Id, timestamp: s
       _id: conversationId,
       owner_id: OWNER_ID,
       started_at: timestamp,
-      title: `Conversation, ${new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
+      title: titleFor(timestamp),
       participant_ids: [],
     }
   );
@@ -122,6 +143,9 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       const participants = event.person_id && !conversation.participant_ids.includes(event.person_id)
         ? [...conversation.participant_ids, event.person_id]
         : conversation.participant_ids;
+      // Deliberately does NOT touch liveConversationId. Any arriving utterance used to
+      // mark its conversation live, so hydrating or polling an old conversation stamped
+      // it "Listening now". Only the recording session sets that, via setLiveConversation.
       return {
         ...state,
         utterances: { ...state.utterances, [utterance._id]: utterance },
@@ -129,7 +153,6 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
           ...state.conversations,
           [conversation._id]: { ...conversation, participant_ids: participants },
         },
-        liveConversationId: event.conversation_id,
       };
     }
 
@@ -340,6 +363,22 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
       };
     }
 
+    /** Server records are authoritative for identity and start time; local titles win. */
+    case 'upsert-conversations': {
+      const conversations = { ...state.conversations };
+      for (const incoming of action.conversations) {
+        const existing = conversations[incoming._id];
+        conversations[incoming._id] = {
+          ...incoming,
+          title: existing?.title ?? incoming.title ?? titleFor(incoming.started_at),
+          participant_ids: existing?.participant_ids?.length
+            ? existing.participant_ids
+            : incoming.participant_ids ?? [],
+        };
+      }
+      return { ...state, conversations };
+    }
+
     case 'dismiss-unknown-card':
       return { ...state, unknownCardDismissed: true };
 
@@ -361,6 +400,7 @@ interface StoreValue {
   renameConversation(conversationId: Id, title: string): void;
   dismissUnknownCard(): void;
   attributeUtterances(utteranceIds: Id[], personId: Id): void;
+  upsertConversations(conversations: Conversation[]): void;
   setLiveConversation(conversationId: Id | null): void;
 }
 
@@ -399,6 +439,7 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
     renameConversation: (conversationId, title) => dispatch({ kind: 'rename-conversation', conversationId, title }),
     dismissUnknownCard: () => dispatch({ kind: 'dismiss-unknown-card' }),
     attributeUtterances: (utteranceIds, personId) => dispatch({ kind: 'attribute-utterances', utteranceIds, personId }),
+    upsertConversations: (conversations) => dispatch({ kind: 'upsert-conversations', conversations }),
     setLiveConversation: (conversationId) => dispatch({ kind: 'set-live-conversation', conversationId }),
   }), [state, ingest]);
 

@@ -24,7 +24,7 @@ interface HomeScreenProps {
 }
 
 export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
-  const { state, dismissUnknownCard, ingest } = useStore();
+  const { state, dismissUnknownCard, ingest, upsertConversations } = useStore();
   const conversations = useConversations();
   const unknown = useUnknownPeople();
   const navigation = useNavigation();
@@ -38,6 +38,17 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
 
   const showUnknownCard = unknown.length > 0 && !state.unknownCardDismissed;
 
+  // A conversation with no turns is a shell — a session that captured nothing, or a record
+  // whose utterances have not loaded. Listing them gives you rows that open onto nothing.
+  const utteranceCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const utterance of Object.values(state.utterances)) {
+      counts[utterance.conversation_id] = (counts[utterance.conversation_id] ?? 0) + 1;
+    }
+    return counts;
+  }, [state.utterances]);
+  const listedConversations = conversations.filter((c) => (utteranceCounts[c._id] ?? 0) > 0);
+
   // Recent conversations came only from what this app instance had seen, so past
   // recordings were invisible after a restart. Pull the server's list and hydrate each
   // one's turns; utterances are keyed by id, so re-seeing them is a no-op.
@@ -45,6 +56,8 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
     let cancelled = false;
     void api.listConversations()
       .then(async (conversations) => {
+        if (cancelled) return;
+        upsertConversations(conversations);
         for (const conversation of conversations.slice(0, 8)) {
           if (cancelled) return;
           const summary = await api.getConversation(conversation._id).catch(() => null);
@@ -68,7 +81,7 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         // No server yet: seeded and live data still render.
       });
     return () => { cancelled = true; };
-  }, [ingest]);
+  }, [ingest, upsertConversations]);
 
   const submit = () => {
     ask(query);
@@ -187,14 +200,14 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
 
         <View style={styles.section}>
           <SectionHeader title="Recent conversations" />
-          {conversations.length === 0 ? (
+          {listedConversations.length === 0 ? (
             <EmptyState
               icon={ChatsCircleIcon}
               title="Nothing recorded yet"
               body="Start listening and the room fills in here, speaker by speaker."
             />
           ) : (
-            conversations.map((conversation) => {
+            listedConversations.map((conversation) => {
               const participants = conversation.participant_ids
                 .map((id) => state.people[id])
                 .filter(Boolean) as PersonRecord[];

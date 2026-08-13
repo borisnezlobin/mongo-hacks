@@ -15,7 +15,7 @@ describe('event store', () => {
   });
 
   it('supersedes the seeded fact rather than duplicating it', () => {
-    const state = applyEvents(createInitialState(), scriptEvents);
+    const state = applyEvents(createInitialState(true), scriptEvents);
     expect(state.facts['f-maya-move-2'].superseded_by).toBe('f-maya-move-3');
     expect(state.facts['f-maya-move-3'].superseded_by).toBeUndefined();
 
@@ -69,6 +69,8 @@ describe('event store', () => {
     const conversation = state.conversations[LIVE_CONVERSATION_ID];
     expect(conversation.participant_ids).toContain('p-maya');
     expect(conversation.participant_ids).toContain(UNKNOWN_PERSON_ID);
-    expect(state.liveConversationId).toBe(LIVE_CONVERSATION_ID);
+    // Arriving utterances must NOT mark a conversation live: hydrating or polling an old
+    // one would otherwise stamp it "Listening now". Only the recording session sets it.
+    expect(state.liveConversationId).toBeNull();
   });
 });
