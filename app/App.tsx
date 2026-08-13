@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   Manrope_400Regular,
   Manrope_500Medium,
@@ -16,7 +17,7 @@ import { TabBar, type TabKey } from './src/components/tab-bar';
 import { colors, layout, spacing } from './src/constants/theme';
 import { useAudioUplink } from './src/lib/audio-uplink';
 import { subscribeToEvents, type StreamSource } from './src/lib/events';
-import { getInsets } from './src/lib/insets';
+import { useInsets } from './src/lib/insets';
 import { LIVE_CONVERSATION_ID } from './src/lib/mock-sse';
 import { NavigationProvider, useNavigation } from './src/lib/navigation';
 import { cancelPromiseNotification, schedulePromiseNotification } from './src/lib/notifications';
@@ -49,18 +50,20 @@ export default function App() {
   }
 
   return (
-    <AmeliaStoreProvider>
-      <NavigationProvider>
-        <Shell />
-      </NavigationProvider>
-    </AmeliaStoreProvider>
+    <SafeAreaProvider>
+      <AmeliaStoreProvider>
+        <NavigationProvider>
+          <Shell />
+        </NavigationProvider>
+      </AmeliaStoreProvider>
+    </SafeAreaProvider>
   );
 }
 
 function Shell() {
   const { state, ingest, namePerson } = useStore();
   const navigation = useNavigation();
-  const insets = useMemo(getInsets, []);
+  const insets = useInsets();
   const [, setStreamSource] = useState<StreamSource>('connecting');
   const [namingTarget, setNamingTarget] = useState<PersonRecord | null>(null);
 
