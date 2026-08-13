@@ -147,6 +147,29 @@ export async function startGlassesServer(deps: ServerDependencies): Promise<bool
   }
 
   const instance = new AmeliaGlassesServer({ packageName, apiKey, port });
+
+  // The console derives a webview URL from the Server URL, and the phone app
+  // opens it when the user taps the app. Amelia has no webview, so that 404s
+  // and surfaces as "cannot GET /webview" on the phone — alarming, but
+  // unrelated to audio. Serve a small live status page instead.
+  instance.getExpressApp().get('/webview', (_request: unknown, response: { type(t: string): { send(body: string): void } }) => {
+    const sessions = [...active.values()];
+    const chunks = sessions.reduce((total, entry) => total + entry.chunks, 0);
+    response.type('html').send(`<!doctype html>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{margin:0;padding:2rem;background:#f4f1ea;color:#1c1a18;
+       font:16px/1.5 Georgia,'Times New Roman',serif}
+  h1{font-size:1.5rem;margin:0 0 .25rem}
+  p{margin:.25rem 0;color:#5a534c}
+  .n{font-size:2.5rem;margin:1.5rem 0 0}
+</style>
+<h1>Amelia</h1>
+<p>Listening through your glasses.</p>
+<p class="n">${sessions.length ? `${chunks.toLocaleString()}` : '&mdash;'}</p>
+<p>${sessions.length ? 'audio chunks received' : 'no active session'}</p>`);
+  });
+
   await instance.start();
   server = instance;
   console.log(`[glasses] MentraOS app server on :${port} (webhook: /webhook)`);
