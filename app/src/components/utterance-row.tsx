@@ -7,29 +7,33 @@ import { Avatar } from './avatar';
 import { colors, radii, spacing } from '../constants/theme';
 import { displayName, isUnnamed, type PersonRecord } from '../lib/store';
 
-interface UtteranceBubbleProps {
+interface UtteranceRowProps {
   utterance: Utterance;
   person?: PersonRecord;
-  isOwner: boolean;
-  /** False when the previous bubble is from the same speaker, Slack-style grouping. */
+  /** False when the previous row is from the same speaker, Slack-style grouping. */
   showHeader: boolean;
   onPressPerson?(): void;
   onName?(): void;
 }
 
+const AVATAR_SIZE = 36;
+const GUTTER = AVATAR_SIZE + spacing.md;
+
 /**
- * A re-label changes who a bubble belongs to after it is already on screen. The row never
- * unmounts — only the identity crossfades — so the transcript reads as a correction rather
- * than a flicker.
+ * Slack shape: rounded-square avatar in a fixed left gutter, bold name and timestamp on
+ * one line, message text flush beneath it. No bubbles — consecutive turns from the same
+ * speaker drop the header and hang under the same gutter.
+ *
+ * A re-label changes who a row belongs to after it is already on screen. The row never
+ * unmounts, only the identity crossfades, so it reads as a correction rather than a flicker.
  */
-export function UtteranceBubble({
+export function UtteranceRow({
   utterance,
   person,
-  isOwner,
   showHeader,
   onPressPerson,
   onName,
-}: UtteranceBubbleProps) {
+}: UtteranceRowProps) {
   const identityFade = useRef(new Animated.Value(1)).current;
   const highlight = useRef(new Animated.Value(0)).current;
   const previousPersonId = useRef(utterance.person_id);
@@ -52,26 +56,26 @@ export function UtteranceBubble({
   const unnamed = !person || isUnnamed(person);
   const backgroundColor = highlight.interpolate({
     inputRange: [0, 1],
-    outputRange: [isOwner ? colors.accentSoft : colors.surface, colors.liveSoft],
+    outputRange: ['rgba(0,0,0,0)', colors.liveSoft],
   });
 
   return (
-    <View style={styles.row}>
-      <Animated.View style={{ opacity: identityFade }}>
-        {showHeader ? (
+    <Animated.View style={[styles.row, showHeader && styles.rowSpaced, { backgroundColor }]}>
+      {showHeader ? (
+        <Animated.View style={{ opacity: identityFade }}>
           <Pressable onPress={onPressPerson} accessibilityLabel={displayName(person)}>
-            <Avatar person={person} seed={utterance.voiceprint_id} size={34} />
+            <Avatar person={person} seed={utterance.voiceprint_id} size={AVATAR_SIZE} shape="rounded" />
           </Pressable>
-        ) : (
-          <View style={styles.avatarSpacer} />
-        )}
-      </Animated.View>
+        </Animated.View>
+      ) : (
+        <View style={styles.gutterSpacer} />
+      )}
 
       <View style={styles.column}>
         {showHeader ? (
           <Animated.View style={[styles.header, { opacity: identityFade }]}>
             <Pressable onPress={onPressPerson}>
-              <AppText variant="bodyStrong" color={unnamed ? colors.inkMuted : colors.ink}>
+              <AppText variant="bodyStrong" color={unnamed ? colors.inkMuted : colors.ink} style={styles.name}>
                 {displayName(person)}
               </AppText>
             </Pressable>
@@ -79,12 +83,10 @@ export function UtteranceBubble({
           </Animated.View>
         ) : null}
 
-        <Animated.View style={[styles.bubble, { backgroundColor }, !utterance.is_final && styles.bubbleInterim]}>
-          <AppText variant="body" color={utterance.is_final ? colors.ink : colors.inkMuted}>
-            {utterance.text}
-            {utterance.is_final ? '' : '…'}
-          </AppText>
-        </Animated.View>
+        <AppText variant="body" color={utterance.is_final ? colors.ink : colors.inkMuted}>
+          {utterance.text}
+          {utterance.is_final ? '' : '…'}
+        </AppText>
 
         {unnamed && onName ? (
           <Pressable
@@ -97,7 +99,7 @@ export function UtteranceBubble({
           </Pressable>
         ) : null}
       </View>
-    </View>
+    </Animated.View>
   );
 }
 
@@ -109,24 +111,25 @@ function formatOffset(ms: number): string {
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
-  avatarSpacer: { width: 34 },
-  column: { flex: 1, gap: spacing.xs },
-  header: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
-  bubble: {
-    alignSelf: 'flex-start',
-    maxWidth: '100%',
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: radii.bubble,
-    borderTopLeftRadius: 4,
+  row: {
+    flexDirection: 'row',
+    gap: spacing.md,
+    paddingVertical: 3,
+    paddingHorizontal: spacing.sm,
+    marginHorizontal: -spacing.sm,
+    borderRadius: 6,
   },
-  bubbleInterim: { backgroundColor: colors.canvasSunken },
+  rowSpaced: { marginTop: spacing.lg },
+  gutterSpacer: { width: GUTTER - spacing.md },
+  column: { flex: 1, gap: 2 },
+  header: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
+  name: { fontFamily: 'Manrope_700Bold' },
   nameAction: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.xs,
     alignSelf: 'flex-start',
+    marginTop: spacing.xs,
     paddingHorizontal: spacing.md,
     paddingVertical: 5,
     borderRadius: radii.pill,
