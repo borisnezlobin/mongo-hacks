@@ -34,7 +34,10 @@ describe('event store', () => {
   });
 
   it('re-labels an already-rendered bubble to a different speaker', () => {
-    const beforeRelabel = applyEvents(createInitialState(), scriptEvents.slice(0, 7));
+    const firstLu4Index = scriptEvents.findIndex(
+      (event) => event.type === 'utterance' && event.utterance_id === 'lu4',
+    );
+    const beforeRelabel = applyEvents(createInitialState(), scriptEvents.slice(0, firstLu4Index + 1));
     expect(beforeRelabel.utterances.lu4.person_id).toBe('p-jules');
 
     const afterRelabel = applyEvents(createInitialState(), scriptEvents);
@@ -55,6 +58,17 @@ describe('event store', () => {
     expect(state.amelia?.steps.length).toBeGreaterThanOrEqual(6);
     expect(state.amelia?.done).toBe(true);
     expect(state.amelia?.reply).toContain('September 20');
+  });
+
+  it('marks an unsolicited contradiction response as a live context update', () => {
+    const contextAudioIndex = scriptEvents.findIndex(
+      (event) => event.type === 'amelia_audio' && event.request_id.startsWith('context-'),
+    );
+    const state = applyEvents(createInitialState(), scriptEvents.slice(0, contextAudioIndex + 1));
+
+    expect(state.amelia?.kind).toBe('context_update');
+    expect(state.amelia?.reply).toBe('That changed: Maya is moving to Oakland on September 20.');
+    expect(state.amelia?.conversation_id).toBe(LIVE_CONVERSATION_ID);
   });
 
   it('records the live promise with a due date so it can be scheduled', () => {

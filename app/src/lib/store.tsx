@@ -27,11 +27,22 @@ export interface PersonRecord extends Person {
 
 export interface AmeliaTurn {
   request_id: Id;
+  kind: 'request' | 'context_update';
   steps: { step: string; message: string }[];
   reply?: string;
   audio_url?: string;
   conversation_id?: Id;
   done: boolean;
+}
+
+function startAmeliaTurn(requestId: Id, conversationId: Id | null): AmeliaTurn {
+  return {
+    request_id: requestId,
+    kind: requestId.startsWith('context-') ? 'context_update' : 'request',
+    steps: [],
+    done: false,
+    conversation_id: conversationId ?? undefined,
+  };
 }
 
 export interface AmeliaState {
@@ -245,7 +256,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       const turn: AmeliaTurn =
         state.amelia && state.amelia.request_id === event.request_id
           ? state.amelia
-          : { request_id: event.request_id, steps: [], done: false, conversation_id: state.liveConversationId ?? undefined };
+          : startAmeliaTurn(event.request_id, state.liveConversationId);
       return {
         ...state,
         amelia: {
@@ -260,7 +271,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       const turn: AmeliaTurn =
         state.amelia && state.amelia.request_id === event.request_id
           ? state.amelia
-          : { request_id: event.request_id, steps: [], done: false, conversation_id: state.liveConversationId ?? undefined };
+          : startAmeliaTurn(event.request_id, state.liveConversationId);
       return {
         ...state,
         amelia: { ...turn, reply: event.text, audio_url: event.audio_url, done: true },

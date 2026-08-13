@@ -12,7 +12,7 @@ import type {
 import type { AmeliaBus } from '../lib/bus';
 import { collections, insertIdempotent, nowIso } from './db';
 import { embedDocuments } from './embeddings';
-import { normalizeClaim, normalizePromiseText } from './normalize';
+import { factAttributeAliases, normalizeClaim, normalizePromiseText } from './normalize';
 
 const NOTE_ATTRIBUTE = 'note';
 
@@ -64,7 +64,7 @@ export async function resolveFactState(personId: Id, attribute: string): Promise
   return collections
     .facts()
     .findOne(
-      { owner_id: OWNER_ID, person_id: personId, attribute, ...NOT_SUPERSEDED },
+      { owner_id: OWNER_ID, person_id: personId, attribute: { $in: factAttributeAliases(attribute) }, ...NOT_SUPERSEDED },
       { sort: { valid_from: -1 } },
     );
 }
@@ -84,7 +84,7 @@ export async function listCurrentFacts(personId?: Id): Promise<Fact[]> {
 export async function getFactHistory(personId: Id, attribute: string): Promise<Fact[]> {
   return collections
     .facts()
-    .find({ owner_id: OWNER_ID, person_id: personId, attribute })
+    .find({ owner_id: OWNER_ID, person_id: personId, attribute: { $in: factAttributeAliases(attribute) } })
     .sort({ valid_from: 1 })
     .toArray();
 }
@@ -97,6 +97,19 @@ export interface FactDraft {
   valid_from?: string;
   /** Set when the slow pass adjudicated this claim as replacing an existing one. */
   supersedes?: Id;
+}
+
+/**
+ * A fast pass and a later slow pass can extract the same sentence. Check the
+ * idempotency identity before comparing it with current state, otherwise the
+ * slow pass can mistake an already-recorded historical claim for a new change.
+ */
+export async function findFactBySourceClaim(sourceUtteranceId: Id, claim: string): Promise<Fact | null> {
+  return collections.facts().findOne({
+    owner_id: OWNER_ID,
+    primary_source_utterance_id: sourceUtteranceId,
+    claim_normalized: normalizeClaim(claim),
+  });
 }
 
 export async function recordFact(bus: AmeliaBus, draft: FactDraft): Promise<Fact> {

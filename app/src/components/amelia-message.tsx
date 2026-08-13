@@ -22,6 +22,7 @@ export function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
   }, [entrance]);
 
   const answered = Boolean(turn.reply);
+  const isContextUpdate = turn.kind === 'context_update';
 
   return (
     <Animated.View
@@ -39,7 +40,9 @@ export function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
 
       <View style={styles.column}>
         <View style={styles.header}>
-          <AppText variant="bodyStrong" color={colors.accent}>Amelia</AppText>
+          <AppText variant="bodyStrong" color={colors.accent}>
+            {isContextUpdate ? 'Amelia noticed a change' : 'Amelia'}
+          </AppText>
           {!answered ? <ActivityIndicator size="small" color={colors.inkFaint} /> : null}
         </View>
 

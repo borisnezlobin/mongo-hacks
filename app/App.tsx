@@ -10,12 +10,14 @@ import {
   useFonts,
 } from '@expo-google-fonts/manrope';
 import { Newsreader_400Regular, Newsreader_500Medium, Newsreader_600SemiBold } from '@expo-google-fonts/newsreader';
+import { useAudioPlayer } from 'expo-audio';
 import { AmeliaPill } from './src/components/amelia-pill';
 import { NamingSheet } from './src/components/naming-sheet';
 import { RecordingBar } from './src/components/recording-bar';
 import { TabBar, type TabKey } from './src/components/tab-bar';
 import { colors, layout, spacing } from './src/constants/theme';
 import { useAudioUplink } from './src/lib/audio-uplink';
+import { API_BASE_URL } from './src/lib/config';
 import { subscribeToEvents, type StreamSource } from './src/lib/events';
 import { useInsets } from './src/lib/insets';
 import { LIVE_CONVERSATION_ID } from './src/lib/mock-sse';
@@ -74,6 +76,8 @@ function Shell() {
   const [sessionId, setSessionId] = useState(() => `c-${Date.now()}`);
   const liveConversationId = sessionId;
   const uplink = useAudioUplink(liveConversationId);
+  const ameliaPlayer = useAudioPlayer(null, { downloadFirst: true });
+  const playedAudio = useRef<string | null>(null);
 
   useEffect(() => {
     const handle = subscribeToEvents(ingest, setStreamSource);
@@ -120,6 +124,19 @@ function Shell() {
       }
     }
   }, [state.promises, state.people]);
+
+  // Amelia audio URLs are server-relative. Play each completed reply once;
+  // text still renders when ElevenLabs is unavailable and audio_url is absent.
+  useEffect(() => {
+    const audioUrl = state.amelia?.audio_url;
+    if (!audioUrl || playedAudio.current === audioUrl) return;
+    playedAudio.current = audioUrl;
+    const source = /^https?:\/\//i.test(audioUrl)
+      ? audioUrl
+      : `${API_BASE_URL}${audioUrl.startsWith('/') ? '' : '/'}${audioUrl}`;
+    ameliaPlayer.replace(source);
+    ameliaPlayer.play();
+  }, [ameliaPlayer, state.amelia?.audio_url]);
 
   const openLoopCount = useMemo(
     () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,

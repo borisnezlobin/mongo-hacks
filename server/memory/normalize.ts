@@ -16,6 +16,22 @@ export function normalizeClaim(text: string): string {
 
 export const normalizePromiseText = normalizeClaim;
 
+/** Legacy demo data used descriptive slots before extraction adopted short stable keys. */
+const FACT_ATTRIBUTE_ALIASES: Record<string, string[]> = {
+  move: ['move', 'move_date'],
+  move_date: ['move', 'move_date'],
+  preference: ['preference', 'food_preference'],
+  food_preference: ['preference', 'food_preference'],
+  job: ['job', 'work'],
+  work: ['job', 'work'],
+  travel: ['travel', 'recent_trip'],
+  recent_trip: ['travel', 'recent_trip'],
+};
+
+export function factAttributeAliases(attribute: string): string[] {
+  return FACT_ATTRIBUTE_ALIASES[attribute] ?? [attribute];
+}
+
 /** "hey amelia", "Hey, Amelia!" and "HEY AMELIA" are the same wake phrase. */
 export function containsPhrase(text: string, phrase: string): boolean {
   return normalizeClaim(text).includes(normalizeClaim(phrase));

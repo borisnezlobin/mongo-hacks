@@ -17,6 +17,7 @@ import { runAmelia, type AmeliaResult } from './agent';
 import { getDraft, listDrafts, sendDraft } from './email';
 import { AUDIO_DIR, AUDIO_MIME, speak } from './tts';
 import { detectWake } from './wake';
+import { registerLiveContextInterventions } from './live-context';
 import { createStepper } from './steps';
 
 export interface AmeliaOptions {
@@ -94,6 +95,9 @@ export function registerAmeliaRoutes(
   deps: ServerDependencies,
   options: AmeliaOptions = {},
 ): void {
+  // ---- proactive path: explicit live corrections -------------------------
+  registerLiveContextInterventions(deps);
+
   // ---- voice path: wake phrase + owner voiceprint -------------------------
   deps.bus.subscribe((event) => {
     if (event.type !== 'utterance') return;
