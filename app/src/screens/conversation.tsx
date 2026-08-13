@@ -53,11 +53,18 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     setEditingTitle(false);
   };
 
+  // A live conversation has no record until the first utterance arrives, so an empty id is
+  // "waiting for the first voice", not "missing".
   if (!conversation) {
     return (
       <View style={styles.container}>
         <BackRow onPress={navigation.back} />
-        <AppText variant="body" style={styles.missing}>That conversation is gone.</AppText>
+        <View style={styles.waitingBlock}>
+          <AppText variant="title">Listening</AppText>
+          <AppText variant="body" color={colors.inkMuted}>
+            The transcript starts as soon as someone speaks.
+          </AppText>
+        </View>
       </View>
     );
   }
@@ -113,7 +120,17 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
               person={person}
               showHeader={showHeader}
               onPressPerson={() => person && navigation.openPerson(person._id)}
-              onName={person ? () => onNamePerson(person) : undefined}
+              // Unattributed turns still need a way in, so synthesise a person record from
+              // the voiceprint. Without this the speaker Amelia has not resolved yet — often
+              // the owner's own voice — was the one row you could not name.
+              onName={() => onNamePerson(person ?? {
+                _id: utterance.person_id ?? utterance.voiceprint_id ?? utterance._id,
+                owner_id: conversation.owner_id,
+                name: '',
+                voiceprint_id: utterance.voiceprint_id,
+                created_at: utterance.created_at,
+                updated_at: utterance.updated_at,
+              })}
             />
           );
         })}
@@ -166,6 +183,7 @@ const styles = StyleSheet.create({
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   scroll: { paddingHorizontal: layout.screenPadding, paddingTop: spacing.xs },
   waiting: { paddingTop: spacing.xl },
+  waitingBlock: { paddingHorizontal: layout.screenPadding, gap: spacing.xs, paddingTop: spacing.xl },
   missing: { paddingHorizontal: layout.screenPadding },
   flexible: { flex: 1, flexShrink: 1 },
 });
