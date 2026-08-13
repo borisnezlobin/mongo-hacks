@@ -50,9 +50,11 @@ export class OpenAIRealtimeProvider implements StreamProvider {
       this.resolveReady = resolve
       this.rejectReady = reject
     })
+    // No 'OpenAI-Beta: realtime=v1' header: that opts into the retired Beta API, which now
+    // rejects the connection outright ("The Realtime Beta API is no longer supported").
+    // The session.update payload below is already the GA shape.
     const headers = {
       Authorization: `Bearer ${options.apiKey}`,
-      'OpenAI-Beta': 'realtime=v1',
     }
     this.socket = options.socketFactory
       ? options.socketFactory(options.url ?? DEFAULT_REALTIME_URL, headers)
