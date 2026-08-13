@@ -79,7 +79,13 @@ export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarP
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={streaming ? 'Stop listening' : 'Start listening'}
-          onPress={() => (streaming ? uplink.stop() : uplink.start())}
+          onPress={() => {
+            // start()/stop() reject when the uplink socket cannot reach the server. The
+            // hook already reflects that in its own state, so swallow it here rather than
+            // letting it surface as an unhandled rejection redbox.
+            const action = streaming ? uplink.stop() : uplink.start();
+            void Promise.resolve(action).catch(() => {});
+          }}
           disabled={connecting}
           style={({ pressed }) => [styles.trigger, streaming && styles.triggerLive, pressed && styles.pressed]}
         >
