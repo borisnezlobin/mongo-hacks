@@ -1,34 +1,26 @@
 /**
  * Amelia's agent loop.
  *
- * A hand-written loop rather than the SDK tool runner: we emit one amelia_step
- * per turn AND convert the tool-call cap into a forced final answer ("partial
- * answer at cap beats stalling"), which is the one shape the runner's per-turn
- * hooks don't give us for free.
+ * Provider-neutral: it talks to the normalized surface in provider.ts, so the
+ * same loop runs on Claude Opus 5 (Messages API) or a Fireworks open-weights
+ * model (OpenAI-compatible). Per-provider request params live in the provider
+ * modules, not here.
  *
- * NOTE ON MODEL PARAMS — do not "restore" these:
- *   • No `temperature`. Sampling params are REMOVED on Opus 5 and return a 400.
- *     Determinism comes from a tight system prompt plus a low effort level.
- *   • Thinking stays ON. With thinking disabled, Opus 5 occasionally writes a
- *     tool call into visible text instead of emitting a tool_use block — the
- *     call silently never runs. On a stage demo that is a dead Amelia.
- *   • `max_tokens` caps thinking + text together, so it needs real headroom.
+ * Hand-written rather than an SDK tool runner because we emit one amelia_step
+ * per turn AND convert the tool-call cap into a forced final answer ("partial
+ * answer at cap beats stalling").
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import {
   AMELIA_MAX_TOOL_CALLS,
   type AmeliaStepEvent,
   type Id,
   type MemoryApi,
 } from '../../shared/contracts';
+import { getProvider } from './provider-factory';
+import type { Turn } from './provider';
 import { TOOL_STEP, type Stepper } from './steps';
 import { TOOLS, runTool } from './tools';
-
-const MODEL = 'claude-opus-5';
-const MAX_TOKENS = 8_000;
-/** low | medium | high — demo latency lives here. Opus 5 is strong at medium. */
-const EFFORT = (process.env.AMELIA_EFFORT ?? 'medium') as 'low' | 'medium' | 'high';
 
 const SYSTEM = `You are Amelia. You are the owner's memory of the people in their life.
 
@@ -38,7 +30,7 @@ no lists. Say the answer.
 
 Facts change. Before you act on anything dated — a move-in date, an address, a plan —
 call resolve_fact_state and use the current value, not the first search hit you saw.
-When a request branches on such a fact ("if he's already moved in… if he hasn't…"),
+When a request branches on such a fact ("if she's already moved… if she hasn't…"),
 resolve the fact first, decide the branch yourself, and act on that one branch only.
 Never ask the owner which branch applies.
 
@@ -55,10 +47,12 @@ export interface AmeliaResult {
   toolCallsUsed: number;
   cappedOut: boolean;
   refused: boolean;
-  /** Model hit max_tokens mid-turn — the reply is unusable, not merely short. */
+  /** Model hit its output cap mid-turn — the reply is unusable, not just short. */
   truncated: boolean;
   /** A newer summon superseded this run. */
   aborted: boolean;
+  /** Which backend answered, for the trace. */
+  provider: string;
 }
 
 export interface RunOptions {
@@ -70,13 +64,6 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
-let client: Anthropic | null = null;
-/** Lazy so importing this module doesn't throw when the key isn't set yet. */
-function getClient(): Anthropic {
-  client ??= new Anthropic();
-  return client;
-}
-
 export async function runAmelia({
   requestId,
   command,
@@ -84,7 +71,8 @@ export async function runAmelia({
   stepper,
   signal,
 }: RunOptions): Promise<AmeliaResult> {
-  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: command }];
+  const provider = getProvider();
+  const turns: Turn[] = [{ role: 'user', text: command }];
   const { steps, step } = stepper;
   let toolCallsUsed = 0;
   let cappedOut = false;
@@ -98,6 +86,7 @@ export async function runAmelia({
     refused: false,
     truncated: false,
     aborted: false,
+    provider: `${provider.id}:${provider.model}`,
     ...over,
   });
 
@@ -108,84 +97,62 @@ export async function runAmelia({
     // side effects — abort is not just about cancelling the HTTP request.
     if (signal?.aborted) return outcome({ aborted: true });
 
-    const atCap = toolCallsUsed >= AMELIA_MAX_TOOL_CALLS;
-
-    const response = await getClient().messages.create(
-      {
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: SYSTEM,
-        thinking: { type: 'adaptive' },
-        output_config: { effort: EFFORT },
-        tools: TOOLS,
-        // Keep `tools` in the request even at the cap — history already holds
-        // tool_use blocks, and dropping the definitions invalidates them.
-        // `none` is what actually forces the final answer.
-        tool_choice: atCap ? { type: 'none' } : { type: 'auto' },
-        messages,
-      },
-      { signal },
-    );
+    const completion = await provider.complete({
+      system: SYSTEM,
+      turns,
+      tools: TOOLS,
+      allowTools: toolCallsUsed < AMELIA_MAX_TOOL_CALLS,
+      signal,
+    });
 
     if (signal?.aborted) return outcome({ aborted: true });
 
-    if (response.stop_reason === 'refusal') {
+    if (completion.stop === 'refusal') {
       step('denied', 'Amelia would not answer that');
       return outcome({ refused: true });
     }
 
-    // max_tokens caps thinking + text together, so a truncated turn can carry a
-    // thinking block and NO text. Treating that as a normal reply makes Amelia
-    // go silent while the UI reads "Answering".
-    if (response.stop_reason === 'max_tokens') {
+    // The output cap covers reasoning + text, so a truncated turn can carry no
+    // usable text at all. Treating that as a normal reply makes Amelia go
+    // silent while the UI reads "Answering".
+    if (completion.stop === 'max_tokens' && !completion.toolCalls.length) {
       step('error', 'Ran out of room mid-thought — try again at lower effort');
       return outcome({ truncated: true });
     }
 
-    // No server-side tools in play, but an unhandled pause would otherwise look
-    // like a silent truncation.
-    if (response.stop_reason === 'pause_turn') {
-      messages.push({ role: 'assistant', content: response.content });
+    if (completion.stop === 'pause') {
+      turns.push({ role: 'assistant', text: completion.text, toolCalls: completion.toolCalls });
       continue;
     }
 
-    const toolUses = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
-    );
-
-    if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
-      const text = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('')
-        .trim();
+    if (!completion.toolCalls.length) {
       step('reply', cappedOut ? 'Partial answer — tool budget spent' : 'Answering');
-      return outcome({ text });
+      return outcome({ text: completion.text });
     }
 
-    messages.push({ role: 'assistant', content: response.content });
+    turns.push({ role: 'assistant', text: completion.text, toolCalls: completion.toolCalls });
 
-    // Claude may request several tools per turn — run them together and return
-    // every result in ONE user message, or it stops batching.
-    const results: Anthropic.ToolResultBlockParam[] = [];
-    for (const use of toolUses) {
+    // Every tool call gets exactly one result. Both providers require the
+    // pairing; the Anthropic one additionally merges them into a single user
+    // message so parallel tool use keeps working.
+    for (const call of completion.toolCalls) {
       // Re-check per tool: the abandoned run must not fire create_reminder,
       // add_note, or draft_email on its way out.
       if (signal?.aborted) return outcome({ aborted: true });
 
       toolCallsUsed++;
-      const toolOutcome = await runTool(memory, use.name, use.input as Record<string, any>);
+      const toolOutcome = await runTool(memory, call.name, call.input);
       if (signal?.aborted) return outcome({ aborted: true });
 
-      step(TOOL_STEP[use.name] ?? 'reason', toolOutcome.message);
-      results.push({
-        type: 'tool_result',
-        tool_use_id: use.id,
+      step(TOOL_STEP[call.name] ?? 'reason', toolOutcome.message);
+      turns.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name: call.name,
         content: JSON.stringify(toolOutcome.result ?? null),
-        is_error: toolOutcome.isError ?? false,
+        isError: toolOutcome.isError,
       });
     }
-    messages.push({ role: 'user', content: results });
 
     if (toolCallsUsed >= AMELIA_MAX_TOOL_CALLS) cappedOut = true;
   }

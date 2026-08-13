@@ -8,10 +8,13 @@ import wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# Voice choice is load-bearing: ECAPA cannot separate same-engine macOS
+# voices (Samantha x Alex cosine ran 0.80+, inside the within-speaker range).
+# These four measure well apart at the utterance level.
 VOICE_BY_SPEAKER = {
     "Amelia's owner": "Daniel",
     "Maya": "Samantha",
-    "Jules": "Alex",
+    "Jules": "Fred",
     "Priya": "Rishi",
 }
 SAMPLE_RATE = 16_000
@@ -32,6 +35,7 @@ def main() -> None:
     fixture = json.loads((ROOT / "transcript.json").read_text())
     silence = b"\x00\x00" * int(SAMPLE_RATE * GAP_MS / 1000)
     frames = []
+    cursor_ms = 0.0
     with tempfile.TemporaryDirectory(prefix="amelia-fixture-") as temp_dir:
         for index, utterance in enumerate(fixture["utterances"]):
             segment = Path(temp_dir) / f"{index}.wav"
@@ -39,7 +43,13 @@ def main() -> None:
             with wave.open(str(segment), "rb") as source:
                 if source.getnchannels() != 1 or source.getsampwidth() != 2:
                     raise RuntimeError("Expected mono 16-bit speech from macOS say")
+                clip_ms = source.getnframes() / source.getframerate() * 1000
                 frames.append(source.readframes(source.getnframes()))
+            # Write the measured position back so transcript timings always
+            # match the audio instead of drifting from hand-written guesses.
+            utterance["start_ms"] = round(cursor_ms)
+            utterance["end_ms"] = round(cursor_ms + clip_ms)
+            cursor_ms += clip_ms + GAP_MS
             frames.append(silence)
 
     pcm = b"".join(frames)
@@ -48,6 +58,7 @@ def main() -> None:
         destination.setsampwidth(2)
         destination.setframerate(SAMPLE_RATE)
         destination.writeframes(pcm)
+    (ROOT / "transcript.json").write_text(json.dumps(fixture, indent=2) + "\n")
 
 
 if __name__ == "__main__":
