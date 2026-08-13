@@ -25,7 +25,7 @@ interface ConversationScreenProps {
 }
 
 export function ConversationScreen({ conversationId, onNamePerson, contentInset }: ConversationScreenProps) {
-  const { state, renameConversation, ingest } = useStore();
+  const { state, renameConversation, ingest, upsertConversations } = useStore();
   const navigation = useNavigation();
   const utterances = useConversationUtterances(conversationId);
   const conversation = state.conversations[conversationId];
@@ -77,6 +77,9 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     const pull = async () => {
       const summary = await api.getConversation(conversationId).catch(() => null);
       if (!summary || cancelled) return;
+      // Take the server's record too: without it the screen fabricates started_at from
+      // ingest time, which then wins forever and sorts the list wrongly.
+      if (summary.conversation) upsertConversations([summary.conversation]);
       for (const utterance of summary.utterances) {
         ingest({
           type: 'utterance',
@@ -100,7 +103,7 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
       cancelled = true;
       clearInterval(interval);
     };
-  }, [conversationId, ingest, isLive]);
+  }, [conversationId, ingest, isLive, upsertConversations]);
 
   const commitTitle = () => {
     renameConversation(conversationId, draftTitle);
