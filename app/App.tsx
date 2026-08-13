@@ -61,13 +61,17 @@ export default function App() {
 }
 
 function Shell() {
-  const { state, ingest, namePerson } = useStore();
+  const { state, ingest, namePerson, attributeUtterances } = useStore();
   const navigation = useNavigation();
   const insets = useInsets();
   const [, setStreamSource] = useState<StreamSource>('connecting');
   const [namingTarget, setNamingTarget] = useState<PersonRecord | null>(null);
+  const [namingUtteranceIds, setNamingUtteranceIds] = useState<string[]>([]);
 
-  const liveConversationId = state.liveConversationId ?? LIVE_CONVERSATION_ID;
+  // Every recording gets its own conversation. Reusing one fixed id meant a new session
+  // appended to the previous one, so old turns appeared in a brand-new transcript.
+  const [sessionId, setSessionId] = useState(() => `c-${Date.now()}`);
+  const liveConversationId = sessionId;
   const uplink = useAudioUplink(liveConversationId);
 
   useEffect(() => {
@@ -85,6 +89,7 @@ function Shell() {
     if (streaming && !wasStreaming.current && navigation.route.name !== 'conversation') {
       navigation.openConversation(liveConversationId);
     }
+    if (!streaming && wasStreaming.current) setSessionId(`c-${Date.now()}`);
     wasStreaming.current = streaming;
   }, [uplink.state, liveConversationId, navigation]);
 
@@ -117,14 +122,31 @@ function Shell() {
   const tabBarHeight = layout.tabBarHeight + Math.max(insets.bottom, spacing.sm);
   const recordingBarOffset = tabBarHeight + spacing.md;
   const ameliaPillOffset = recordingBarOffset + 74;
-  const contentInset = ameliaPillOffset + 72;
+  const contentInset = ameliaPillOffset + 150;
 
   const showFloatingBars = navigation.route.name !== 'person';
 
   const handleSaveName = (name: string, relationship: string, isOwner?: boolean) => {
     if (!namingTarget) return;
+    // A speaker Amelia never resolved has no person record yet, so the naming sheet's
+    // synthesised one has to be registered before it can own anything.
+    ingest({
+      type: 'identity',
+      conversation_id: liveConversationId,
+      person_id: namingTarget._id,
+      voiceprint_id: namingTarget.voiceprint_id,
+      name,
+      utterance_ids: namingUtteranceIds,
+    });
     namePerson(namingTarget._id, name, relationship, isOwner);
+    if (namingUtteranceIds.length > 0) attributeUtterances(namingUtteranceIds, namingTarget._id);
     setNamingTarget(null);
+    setNamingUtteranceIds([]);
+  };
+
+  const openNaming = (person: PersonRecord, utteranceIds: string[] = []) => {
+    setNamingTarget(person);
+    setNamingUtteranceIds(utteranceIds);
   };
 
   return (
@@ -136,7 +158,7 @@ function Shell() {
           <TabScreens
             tab={navigation.tab}
             contentInset={contentInset}
-            onNamePerson={setNamingTarget}
+            onNamePerson={openNaming}
           />
         ) : null}
 
@@ -144,7 +166,7 @@ function Shell() {
           <PersonScreen
             personId={navigation.route.personId}
             contentInset={contentInset}
-            onRename={(personId) => setNamingTarget(state.people[personId] ?? null)}
+            onRename={(personId) => openNaming(state.people[personId] ?? namingTarget!)}
           />
         ) : null}
 
@@ -152,7 +174,7 @@ function Shell() {
           <ConversationScreen
             conversationId={navigation.route.conversationId}
             contentInset={contentInset}
-            onNamePerson={setNamingTarget}
+            onNamePerson={openNaming}
           />
         ) : null}
       </View>
@@ -184,7 +206,7 @@ function Shell() {
       <NamingSheet
         person={namingTarget}
         quickNames={quickNames.slice(0, 4)}
-        onCancel={() => setNamingTarget(null)}
+        onCancel={() => { setNamingTarget(null); setNamingUtteranceIds([]); }}
         onSave={handleSaveName}
       />
     </View>

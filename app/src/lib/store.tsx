@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react';
 import type {
   AmeliaEvent,
   Conversation,
@@ -52,7 +52,8 @@ type Action =
   | { kind: 'reopen-promise'; promiseId: Id }
   | { kind: 'rename-conversation'; conversationId: Id; title: string }
   | { kind: 'dismiss-unknown-card' }
-  | { kind: 'set-live-conversation'; conversationId: Id | null };
+  | { kind: 'set-live-conversation'; conversationId: Id | null }
+  | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id };
 
 const UNNAMED_PATTERN = /^(unknown|unnamed|speaker\b)/i;
 
@@ -304,6 +305,41 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
       };
     }
 
+    /**
+     * Naming a speaker Amelia never resolved has to attach the person to their turns
+     * ourselves — there is no voiceprint to match on, so nothing on the server can do it.
+     * Without this, naming updated a person record no utterance referenced and the
+     * transcript kept saying "Unknown speaker".
+     */
+    case 'attribute-utterances': {
+      const utterances = { ...state.utterances };
+      const nowIso = new Date().toISOString();
+      let conversationId: Id | null = null;
+      for (const id of action.utteranceIds) {
+        const utterance = utterances[id];
+        if (!utterance) continue;
+        conversationId = utterance.conversation_id;
+        utterances[id] = { ...utterance, person_id: action.personId, updated_at: nowIso };
+      }
+      if (!conversationId) return state;
+      const conversation = state.conversations[conversationId];
+      return {
+        ...state,
+        utterances,
+        conversations: conversation
+          ? {
+              ...state.conversations,
+              [conversationId]: {
+                ...conversation,
+                participant_ids: conversation.participant_ids.includes(action.personId)
+                  ? conversation.participant_ids
+                  : [...conversation.participant_ids, action.personId],
+              },
+            }
+          : state.conversations,
+      };
+    }
+
     case 'dismiss-unknown-card':
       return { ...state, unknownCardDismissed: true };
 
@@ -324,6 +360,7 @@ interface StoreValue {
   reopenPromise(promiseId: Id): void;
   renameConversation(conversationId: Id, title: string): void;
   dismissUnknownCard(): void;
+  attributeUtterances(utteranceIds: Id[], personId: Id): void;
   setLiveConversation(conversationId: Id | null): void;
 }
 
@@ -338,28 +375,32 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
     if (timer.current) clearTimeout(timer.current);
   }, []);
 
+  // `ingest` must be referentially stable: it is an effect dependency in the conversation
+  // view, and rebuilding it on every state change turned a one-shot hydrate into an
+  // infinite fetch loop (which looked like the transcript scrolling on its own).
+  const ingest = useCallback((event: AmeliaEvent) => {
+    queue.current.push(event);
+    if (timer.current) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      const events = queue.current;
+      queue.current = [];
+      if (events.length > 0) dispatch({ kind: 'events', events });
+    }, SSE_DEBOUNCE_MS);
+  }, []);
+
   const value = useMemo<StoreValue>(() => ({
     state,
-    // Events arrive faster than the UI needs to repaint; one flush per debounce window
-    // keeps the transcript smooth and matches the contract's SSE_DEBOUNCE_MS.
-    ingest(event) {
-      queue.current.push(event);
-      if (timer.current) return;
-      timer.current = setTimeout(() => {
-        timer.current = null;
-        const events = queue.current;
-        queue.current = [];
-        if (events.length > 0) dispatch({ kind: 'events', events });
-      }, SSE_DEBOUNCE_MS);
-    },
+    ingest,
     namePerson: (personId, name, relationship, isOwner) => dispatch({ kind: 'name-person', personId, name, relationship, isOwner }),
     setAvatar: (personId, uri) => dispatch({ kind: 'set-avatar', personId, uri }),
     closePromise: (promiseId) => dispatch({ kind: 'close-promise', promiseId }),
     reopenPromise: (promiseId) => dispatch({ kind: 'reopen-promise', promiseId }),
     renameConversation: (conversationId, title) => dispatch({ kind: 'rename-conversation', conversationId, title }),
     dismissUnknownCard: () => dispatch({ kind: 'dismiss-unknown-card' }),
+    attributeUtterances: (utteranceIds, personId) => dispatch({ kind: 'attribute-utterances', utteranceIds, personId }),
     setLiveConversation: (conversationId) => dispatch({ kind: 'set-live-conversation', conversationId }),
-  }), [state]);
+  }), [state, ingest]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }

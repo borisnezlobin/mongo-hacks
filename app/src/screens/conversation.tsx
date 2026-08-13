@@ -19,7 +19,7 @@ import {
 
 interface ConversationScreenProps {
   conversationId: Id;
-  onNamePerson(person: PersonRecord): void;
+  onNamePerson(person: PersonRecord, utteranceIds?: string[]): void;
   contentInset: number;
 }
 
@@ -28,6 +28,9 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
   const navigation = useNavigation();
   const utterances = useConversationUtterances(conversationId);
   const conversation = state.conversations[conversationId];
+  // VAD emits stray fragments — a lone "." or a single stray word. They are noise in a
+  // transcript someone is reading, so they are hidden rather than stored differently.
+  const visible = utterances.filter((u) => u.text.replace(/[^a-zA-Z0-9]/g, '').length > 1);
   const scrollRef = useRef<ScrollView>(null);
 
   const [editingTitle, setEditingTitle] = useState(false);
@@ -47,7 +50,7 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     if (!isLive) return;
     const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
     return () => clearTimeout(timer);
-  }, [utterances.length, ameliaTurn?.steps.length, ameliaTurn?.reply, isLive]);
+  }, [visible.length, ameliaTurn?.steps.length, ameliaTurn?.reply, isLive]);
 
   // SSE only carries what happens while the app is open, so a reload used to look like the
   // transcript had been deleted. Hydrate from the server on open; the store keys utterances
@@ -138,14 +141,20 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
         contentContainerStyle={[styles.scroll, { paddingBottom: contentInset }]}
         showsVerticalScrollIndicator={false}
       >
-        {utterances.map((utterance, index) => {
+        {visible.map((utterance, index) => {
           const person = utterance.person_id ? state.people[utterance.person_id] : undefined;
-          const previous = utterances[index - 1];
+          const previous = visible[index - 1];
           const showHeader = !previous || previous.person_id !== utterance.person_id;
-          // One naming affordance per speaker, on their first turn — not one per message.
-          const speakerKey = utterance.person_id ?? utterance.voiceprint_id ?? utterance._id;
-          const isFirstTurnForSpeaker =
-            utterances.findIndex((u) => (u.person_id ?? u.voiceprint_id ?? u._id) === speakerKey) === index;
+          // One naming affordance per run of turns, on the first of the run. Keying it on
+          // the utterance id gave every message its own button, because unresolved speakers
+          // share neither a person id nor a voiceprint id to group on.
+          const runIds: string[] = [];
+          if (showHeader) {
+            for (let i = index; i < visible.length; i += 1) {
+              if (visible[i].person_id !== utterance.person_id) break;
+              runIds.push(visible[i]._id);
+            }
+          }
           return (
             <UtteranceRow
               key={utterance._id}
@@ -156,21 +165,24 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
               // Unattributed turns still need a way in, so synthesise a person record from
               // the voiceprint. Without this the speaker Amelia has not resolved yet — often
               // the owner's own voice — was the one row you could not name.
-              onName={!isFirstTurnForSpeaker ? undefined : () => onNamePerson(person ?? {
-                _id: utterance.person_id ?? utterance.voiceprint_id ?? utterance._id,
-                owner_id: conversation.owner_id,
-                name: '',
-                voiceprint_id: utterance.voiceprint_id,
-                created_at: utterance.created_at,
-                updated_at: utterance.updated_at,
-              })}
+              onName={!showHeader ? undefined : () => onNamePerson(
+                person ?? {
+                  _id: utterance.person_id ?? utterance.voiceprint_id ?? `speaker-${utterance._id}`,
+                  owner_id: conversation.owner_id,
+                  name: '',
+                  voiceprint_id: utterance.voiceprint_id,
+                  created_at: utterance.created_at,
+                  updated_at: utterance.updated_at,
+                },
+                runIds,
+              )}
             />
           );
         })}
 
         {ameliaTurn ? <AmeliaMessage turn={ameliaTurn} /> : null}
 
-        {utterances.length === 0 ? (
+        {visible.length === 0 ? (
           <AppText variant="body" color={colors.inkMuted} style={styles.waiting}>
             Waiting for the first voice.
           </AppText>
