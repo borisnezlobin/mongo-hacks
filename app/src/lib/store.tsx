@@ -46,7 +46,7 @@ export interface AmeliaState {
 
 type Action =
   | { kind: 'events'; events: AmeliaEvent[] }
-  | { kind: 'name-person'; personId: Id; name: string; relationship?: string }
+  | { kind: 'name-person'; personId: Id; name: string; relationship?: string; isOwner?: boolean }
   | { kind: 'set-avatar'; personId: Id; uri: string }
   | { kind: 'close-promise'; promiseId: Id }
   | { kind: 'reopen-promise'; promiseId: Id }
@@ -91,7 +91,7 @@ function ensureConversation(state: AmeliaState, conversationId: Id, timestamp: s
       _id: conversationId,
       owner_id: OWNER_ID,
       started_at: timestamp,
-      title: 'Live conversation',
+      title: `Conversation, ${new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`,
       participant_ids: [],
     }
   );
@@ -258,18 +258,21 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
     case 'name-person': {
       const existing = state.people[action.personId];
       if (!existing) return state;
-      return {
-        ...state,
-        people: {
-          ...state.people,
-          [action.personId]: {
-            ...existing,
-            name: action.name.trim(),
-            relationship: action.relationship?.trim() || existing.relationship,
-            updated_at: new Date().toISOString(),
-          },
-        },
+      const people = { ...state.people };
+      // Only one person can be the owner, so claiming it releases whoever held it.
+      if (action.isOwner) {
+        for (const [id, person] of Object.entries(people)) {
+          if (person.is_owner && id !== action.personId) people[id] = { ...person, is_owner: false };
+        }
+      }
+      people[action.personId] = {
+        ...existing,
+        name: action.name.trim(),
+        relationship: action.relationship?.trim() || existing.relationship,
+        is_owner: action.isOwner ?? existing.is_owner,
+        updated_at: new Date().toISOString(),
       };
+      return { ...state, people };
     }
 
     case 'set-avatar': {
@@ -315,7 +318,7 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
 interface StoreValue {
   state: AmeliaState;
   ingest(event: AmeliaEvent): void;
-  namePerson(personId: Id, name: string, relationship?: string): void;
+  namePerson(personId: Id, name: string, relationship?: string, isOwner?: boolean): void;
   setAvatar(personId: Id, uri: string): void;
   closePromise(promiseId: Id): void;
   reopenPromise(promiseId: Id): void;
@@ -349,7 +352,7 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
         if (events.length > 0) dispatch({ kind: 'events', events });
       }, SSE_DEBOUNCE_MS);
     },
-    namePerson: (personId, name, relationship) => dispatch({ kind: 'name-person', personId, name, relationship }),
+    namePerson: (personId, name, relationship, isOwner) => dispatch({ kind: 'name-person', personId, name, relationship, isOwner }),
     setAvatar: (personId, uri) => dispatch({ kind: 'set-avatar', personId, uri }),
     closePromise: (promiseId) => dispatch({ kind: 'close-promise', promiseId }),
     reopenPromise: (promiseId) => dispatch({ kind: 'reopen-promise', promiseId }),

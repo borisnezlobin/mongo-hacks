@@ -9,7 +9,7 @@ import type { PersonRecord } from '../lib/store';
 interface NamingSheetProps {
   person: PersonRecord | null;
   onCancel(): void;
-  onSave(name: string, relationship: string): void;
+  onSave(name: string, relationship: string, isOwner?: boolean): void;
   quickNames?: string[];
 }
 
@@ -80,6 +80,16 @@ export function NamingSheet({ person, onCancel, onSave, quickNames = [] }: Namin
             </View>
           ) : null}
 
+          {/* The owner's own voice shows up as just another unknown speaker, and naming it
+              after yourself is not the same as claiming it — this marks it as you. */}
+          <Pressable
+            onPress={() => onSave(trimmed || 'Me', relationship, true)}
+            style={({ pressed }) => [styles.ownerAction, pressed && styles.pressed]}
+          >
+            <AppText variant="bodyStrong" color={colors.accent}>This is me</AppText>
+            <AppText variant="caption">Mark this voice as yours</AppText>
+          </Pressable>
+
           <View style={styles.actions}>
             <Button label="Not now" variant="quiet" onPress={onCancel} style={styles.action} />
             <Button
@@ -135,6 +145,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
   },
   pressed: { opacity: 0.7 },
+  ownerAction: {
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderRadius: radii.button,
+    backgroundColor: colors.accentSoft,
+    gap: 1,
+  },
   actions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.sm },
   action: { flex: 1 },
 });
