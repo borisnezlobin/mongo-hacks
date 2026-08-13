@@ -1,5 +1,10 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { createApp } from './index';
+import { createApp, isDirectRun } from './index';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const moduleUrl = pathToFileURL(resolve(here, 'index.ts')).href;
 
 describe('Lane 0 server scaffold', () => {
   it('reports health', async () => {
@@ -35,5 +40,12 @@ describe('Lane 0 server scaffold', () => {
       end_ms: 3_100,
       is_final: true,
     });
+  });
+
+  it('detects tsx and node entrypoints without starting under vitest', () => {
+    expect(isDirectRun(['node', resolve(here, 'index.ts')], moduleUrl)).toBe(true);
+    expect(isDirectRun(['node', '/usr/local/bin/tsx', 'index.ts'], moduleUrl)).toBe(true);
+    expect(isDirectRun(['node', '/usr/local/bin/tsx', 'watch', 'index.ts'], moduleUrl)).toBe(true);
+    expect(isDirectRun(process.argv, moduleUrl)).toBe(false);
   });
 });
