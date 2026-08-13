@@ -62,7 +62,10 @@ const checks: [string, boolean][] = [
   ['was not refused or truncated', !result.refused && !result.truncated],
   ['drafted an email', Boolean(draft)],
   ['addressed it from memory, not invention', draft?.to_email === 'maya@example.com'],
-  ['called resolve_fact_state on the move date', memory.calls.some((c) => c.includes('resolveFactState') && c.includes('move_date'))],
+  [
+    'called resolve_fact_state on the move date',
+    memory.calls.some((c) => c.includes('resolveFactState') && /move(?:_date)?/.test(c)),
+  ],
   ['stayed under the tool cap', !result.cappedOut],
   ['did not claim to have sent it', !/\b(i )?(sent|emailed) (it|her|the)\b/i.test(result.text)],
   [

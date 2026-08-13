@@ -54,6 +54,20 @@ export const mockScript: ScriptedEvent[] = [
     },
   },
   {
+    atMs: 4500,
+    event: {
+      type: 'amelia_step', request_id: 'context-f-maya-move-3', step: 'reason',
+      message: "Detected a live update to Maya's move date",
+    },
+  },
+  {
+    atMs: 5100,
+    event: {
+      type: 'amelia_audio', request_id: 'context-f-maya-move-3',
+      text: 'That changed: Maya is moving to Oakland on September 20.',
+    },
+  },
+  {
     atMs: 5600,
     event: {
       type: 'utterance', utterance_id: 'lu3', conversation_id: LIVE_CONVERSATION_ID,

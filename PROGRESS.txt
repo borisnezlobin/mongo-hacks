@@ -10,3 +10,15 @@ Amelia Lane 0 checkpoint
 [blocked externally] Verify Resend domain and ElevenLabs tier (service credentials/accounts are not present)
 
 Out of scope by user direction: Lanes A-E implementation.
+
+Live contradiction feature checkpoint
+
+[complete] Lane B extracts durable facts on the finalized-turn fast pass and reconciles them against current Atlas state
+[complete] Focused Lane B tests and repository typecheck
+[complete] Lane D guarded proactive intervention with explicit-correction, attribute, duplicate, and cooldown gates
+[complete] Focused Lane D tests and repository typecheck
+[complete] Lane C labels proactive turns as live context updates and plays each returned ElevenLabs clip once
+[complete] Focused cross-lane tests and repository typecheck
+[complete] Full suite: 94 tests, repository typecheck, and whitespace audit
+[complete] Atlas/Fireworks fixture acceptance and canonical Amelia agent acceptance
+[complete] Isolated end-to-end contradiction audit: supersession, proactive step, and ElevenLabs audio

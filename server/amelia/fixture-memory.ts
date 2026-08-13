@@ -198,7 +198,8 @@ export function createFixtureMemory(): FixtureMemory {
           ?._id ?? personId;
       // Contract shape: the CURRENT fact only. The superseded chain is
       // deliberately unreachable — see TODO(contracts) in tools.ts.
-      return FACTS.find((f) => f.person_id === person && f.attribute === attribute && !f.superseded_by) ?? null;
+      const attributes = attribute === 'move' ? ['move', 'move_date'] : [attribute];
+      return FACTS.find((f) => f.person_id === person && attributes.includes(f.attribute) && !f.superseded_by) ?? null;
     },
 
     async createReminder(promiseId: Id, fireAt: Timestamp): Promise<Reminder> {

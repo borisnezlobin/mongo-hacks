@@ -39,9 +39,20 @@ function renderResults(results: SearchMemoryResult[]): string {
     .join('\n');
 }
 
+/**
+ * Raw utterances are historical evidence, not current state. When retrieval
+ * found a resolved fact, letting an older utterance compete with it can make
+ * the answer model repeat a superseded value. Promises remain because they are
+ * a different memory kind; only raw transcript snippets yield to live facts.
+ */
+export function preferResolvedState(results: SearchMemoryResult[]): SearchMemoryResult[] {
+  if (!results.some((result) => result.kind === 'fact')) return results;
+  return results.filter((result) => result.kind !== 'utterance');
+}
+
 export async function answerQuestion(request: AskRequest): Promise<AskResponse> {
   const requestId = `ask-${crypto.randomUUID()}`;
-  const results = await searchMemory(request.query, request.person_id);
+  const results = preferResolvedState(await searchMemory(request.query, request.person_id));
 
   if (results.length === 0) {
     return {
