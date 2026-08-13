@@ -10,7 +10,13 @@
  */
 import { EMBEDDING_DIMS, EMBEDDING_MODEL, EXTRACTION_MODEL } from '../shared/contracts';
 import { embedDocuments, embedQuery } from '../server/memory/embeddings';
+import { loadEnv } from '../server/memory/env';
 import { extractStructured } from '../server/memory/llm';
+
+const envFiles = loadEnv();
+console.log(`env files read : ${envFiles.length > 0 ? envFiles.join(', ') : 'none (using ambient environment)'}`);
+console.log(`FIREWORKS_API_KEY: ${process.env.FIREWORKS_API_KEY ? 'set' : 'MISSING'}`);
+console.log('');
 
 async function probeEmbeddings(): Promise<boolean> {
   console.log(`embedding model : ${EMBEDDING_MODEL}`);

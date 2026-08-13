@@ -8,30 +8,14 @@ import type {
   Utterance,
   Voiceprint,
 } from '../../shared/contracts';
-
-/**
- * The frozen server scaffold does not load dotenv, and Lane B must not edit it.
- * Node resolves `server/.env` itself; a missing file is fine when the process
- * already carries the variables (CI, the venue laptops sharing a shell export).
- */
-function loadLocalEnv(): void {
-  if (process.env.MONGODB_URI) return;
-  try {
-    process.loadEnvFile(new URL('../.env', import.meta.url).pathname);
-  } catch {
-    /* no local .env — rely on the ambient environment */
-  }
-}
+import { requireEnv } from './env';
 
 let client: MongoClient | undefined;
 let database: Db | undefined;
 
 export function getDb(): Db {
   if (database) return database;
-  loadLocalEnv();
-  const uri = process.env.MONGODB_URI;
-  if (!uri) throw new Error('MONGODB_URI is required (see server/.env.example)');
-  client = new MongoClient(uri);
+  client = new MongoClient(requireEnv('MONGODB_URI'));
   database = client.db();
   return database;
 }

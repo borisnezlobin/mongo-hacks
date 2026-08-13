@@ -1,5 +1,5 @@
 import { EXTRACTION_MODEL } from '../../shared/contracts';
-import { fireworksKey, FIREWORKS_BASE_URL } from './fireworks';
+import { fireworksBaseUrl, fireworksKey } from './fireworks';
 
 export interface ExtractionRequest {
   system: string;
@@ -20,7 +20,7 @@ interface ChatCompletion {
  * parse-retry path to maintain.
  */
 export async function extractStructured<T>(request: ExtractionRequest): Promise<T> {
-  const response = await fetch(`${FIREWORKS_BASE_URL}/chat/completions`, {
+  const response = await fetch(`${fireworksBaseUrl()}/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fireworksKey()}` },
     body: JSON.stringify({

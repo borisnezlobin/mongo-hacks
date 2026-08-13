@@ -13,7 +13,7 @@ export const SSE_DEBOUNCE_MS = 200;
  * verify it against the live model with `npx tsx db/probe-embeddings.ts` before
  * applying indexes, because the three-index cap means there is no second try.
  */
-export const EXTRACTION_MODEL = 'accounts/fireworks/models/llama-v3p3-70b-instruct';
+export const EXTRACTION_MODEL = 'accounts/fireworks/models/gpt-oss-120b';
 export const EMBEDDING_MODEL = 'nomic-ai/nomic-embed-text-v1.5';
 export const EMBEDDING_DIMS = 768;
 export const VOICEPRINT_DIMS = 192;

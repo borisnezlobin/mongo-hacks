@@ -1,8 +1,18 @@
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { MongoClient } from 'mongodb';
 
+// Nothing loads dotenv for standalone scripts; read the same files the server does.
+for (const relative of ['../.env', '../server/.env']) {
+  try {
+    process.loadEnvFile(fileURLToPath(new URL(relative, import.meta.url)));
+  } catch {
+    /* absent — fall through to the ambient environment */
+  }
+}
+
 const uri = process.env.MONGODB_URI;
-if (!uri) throw new Error('MONGODB_URI is required');
+if (!uri) throw new Error('MONGODB_URI is required (see server/.env.example)');
 
 const prune = process.argv.includes('--prune');
 const config = JSON.parse(await readFile(new URL('./indexes.json', import.meta.url), 'utf8'));

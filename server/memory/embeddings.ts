@@ -1,5 +1,5 @@
 import { EMBEDDING_DIMS, EMBEDDING_MODEL } from '../../shared/contracts';
-import { fireworksKey, FIREWORKS_BASE_URL } from './fireworks';
+import { fireworksBaseUrl, fireworksKey } from './fireworks';
 
 /**
  * Nomic's embedding models are trained with task prefixes: a stored fact and a
@@ -9,7 +9,7 @@ import { fireworksKey, FIREWORKS_BASE_URL } from './fireworks';
 const PREFIX = { document: 'search_document: ', query: 'search_query: ' } as const;
 
 async function embedBatch(texts: string[], inputType: keyof typeof PREFIX): Promise<number[][]> {
-  const response = await fetch(`${FIREWORKS_BASE_URL}/embeddings`, {
+  const response = await fetch(`${fireworksBaseUrl()}/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${fireworksKey()}` },
     body: JSON.stringify({

@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { EMBEDDING_DIMS, VOICEPRINT_DIMS } from '../shared/contracts';
 
@@ -9,8 +11,11 @@ interface SearchIndexSpec {
   definition: { fields?: Array<{ numDimensions?: number }> };
 }
 
-const loadConfig = async () =>
-  JSON.parse(await readFile(new URL('./indexes.json', import.meta.url), 'utf8'));
+// The DOM lib is on for the Expo side, and its global URL is not the one
+// node:fs accepts — resolve to a plain path string instead.
+const INDEXES_JSON = join(dirname(fileURLToPath(import.meta.url)), 'indexes.json');
+
+const loadConfig = async () => JSON.parse(await readFile(INDEXES_JSON, 'utf8'));
 
 describe('Atlas index bootstrap', () => {
   it('spends the three-index allowance on attribution, fact vectors, and fact lexical search', async () => {
