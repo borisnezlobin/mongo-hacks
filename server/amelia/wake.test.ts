@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { OWNER_ID, type UtteranceEvent } from '../../shared/contracts';
-import { detectWake } from './wake';
+import { OWNER_PERSON_ID, detectWake } from './wake';
 
 const utterance = (text: string, overrides: Partial<UtteranceEvent> = {}): UtteranceEvent => ({
   type: 'utterance',
   utterance_id: 'u-1',
   conversation_id: 'c-1',
-  person_id: OWNER_ID,
+  person_id: OWNER_PERSON_ID,
   text,
   start_ms: 0,
   end_ms: 3_200,
@@ -69,5 +69,20 @@ describe('detectWake', () => {
 
   it('ignores non-final turns', () => {
     expect(detectWake(utterance('Hey Amelia, do a thing', { is_final: false }), 0.9)).toBeNull();
+  });
+
+  // Regression: OWNER_ID ('owner') is the TENANT scope stamped on documents as
+  // owner_id. The owner PERSON is a separate record (p-amelia-owner in
+  // fixtures/seed.mjs) and that is what person_id holds. Gating on OWNER_ID
+  // compares a person id to a tenant id — always false — silently disabling
+  // every voice summon.
+  it('gates on the owner person id, not the tenant OWNER_ID', () => {
+    expect(OWNER_PERSON_ID).not.toBe(OWNER_ID);
+    expect(detectWake(utterance('Hey Amelia, what about Maya'), 0.9)?.command).toBe(
+      'what about Maya',
+    );
+    expect(
+      detectWake(utterance('Hey Amelia, what about Maya', { person_id: OWNER_ID }), 0.9),
+    ).toBeNull();
   });
 });
