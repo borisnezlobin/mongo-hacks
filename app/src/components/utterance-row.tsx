@@ -64,7 +64,14 @@ export function UtteranceRow({
       {showHeader ? (
         <Animated.View style={{ opacity: identityFade }}>
           <Pressable onPress={onPressPerson} accessibilityLabel={displayName(person)}>
-            <Avatar person={person} seed={utterance.voiceprint_id} size={AVATAR_SIZE} shape="rounded" />
+            {/* Seed falls through voiceprint then person then utterance, so two speakers
+                Amelia has not resolved yet never collide on the same colour. */}
+            <Avatar
+              person={person}
+              seed={utterance.voiceprint_id ?? utterance.person_id ?? utterance._id}
+              size={AVATAR_SIZE}
+              shape="rounded"
+            />
           </Pressable>
         </Animated.View>
       ) : (

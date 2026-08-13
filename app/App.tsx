@@ -121,9 +121,9 @@ function Shell() {
 
   const showFloatingBars = navigation.route.name !== 'person';
 
-  const handleSaveName = (name: string, relationship: string) => {
+  const handleSaveName = (name: string, relationship: string, isOwner?: boolean) => {
     if (!namingTarget) return;
-    namePerson(namingTarget._id, name, relationship);
+    namePerson(namingTarget._id, name, relationship, isOwner);
     setNamingTarget(null);
   };
 
