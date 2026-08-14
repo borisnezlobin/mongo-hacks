@@ -16,7 +16,8 @@ interface UtteranceRowProps {
   attributing?: boolean;
   onPressPerson?(): void;
   onName?(): void;
-  onLongPress?(): void;
+  /** Receives where the text sits on screen, so a menu can open against it. */
+  onLongPress?(anchor: { x: number; y: number; width: number; height: number }): void;
 }
 
 const AVATAR_SIZE = 36;
@@ -39,6 +40,7 @@ export function UtteranceRow({
   onName,
   onLongPress,
 }: UtteranceRowProps) {
+  const bodyRef = useRef<View>(null);
   const identityFade = useRef(new Animated.Value(1)).current;
   const highlight = useRef(new Animated.Value(0)).current;
   const previousPersonId = useRef(utterance.person_id);
@@ -126,18 +128,30 @@ export function UtteranceRow({
           </Animated.View>
         ) : null}
 
-        <Pressable onLongPress={onLongPress} delayLongPress={300} disabled={!onLongPress}>
-          {({ pressed }) => (
-            <AppText
-              variant="body"
-              color={utterance.is_final ? colors.ink : colors.inkMuted}
-              style={pressed && onLongPress ? styles.pressed : undefined}
-            >
-              {utterance.text}
-              {utterance.is_final ? '' : '…'}
-            </AppText>
-          )}
-        </Pressable>
+        {/* Measured in window coordinates on press, so the menu can leave the
+            message exactly where it already is rather than re-describing it. */}
+        <View ref={bodyRef} collapsable={false}>
+          <Pressable
+            onLongPress={() => {
+              if (!onLongPress) return;
+              bodyRef.current?.measureInWindow((x, y, width, height) =>
+                onLongPress({ x, y, width, height }));
+            }}
+            delayLongPress={280}
+            disabled={!onLongPress}
+          >
+            {({ pressed }) => (
+              <AppText
+                variant="body"
+                color={utterance.is_final ? colors.ink : colors.inkMuted}
+                style={pressed && onLongPress ? styles.pressed : undefined}
+              >
+                {utterance.text}
+                {utterance.is_final ? '' : '…'}
+              </AppText>
+            )}
+          </Pressable>
+        </View>
 
       </View>
     </Animated.View>
