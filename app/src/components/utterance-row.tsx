@@ -61,7 +61,8 @@ export function UtteranceRow({
 
   return (
     <Animated.View style={[styles.row, showHeader && styles.rowSpaced, { backgroundColor }]}>
-      {showHeader ? (
+      <View style={styles.gutter}>
+        {showHeader ? (
         <Animated.View style={{ opacity: identityFade }}>
           <Pressable onPress={onPressPerson} accessibilityLabel={displayName(person)}>
             {/* Seed falls through voiceprint then person then utterance, so two speakers
@@ -74,9 +75,8 @@ export function UtteranceRow({
             />
           </Pressable>
         </Animated.View>
-      ) : (
-        <View style={styles.gutterSpacer} />
-      )}
+        ) : null}
+      </View>
 
       <View style={styles.column}>
         {showHeader ? (
@@ -122,9 +122,9 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   rowSpaced: { marginTop: spacing.lg },
-  gutterSpacer: { width: GUTTER - spacing.md },
+  gutter: { width: AVATAR_SIZE, alignItems: 'center' },
   column: { flex: 1, gap: 2 },
-  header: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
+  header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 20 },
   nameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   name: { fontFamily: 'Manrope_700Bold' },
   nameAction: {
