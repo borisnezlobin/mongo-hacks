@@ -127,6 +127,34 @@ export interface IdentityEvent {
   utterance_ids: Id[];
 }
 
+/**
+ * Emitted the moment a speaker cluster is recognised as somebody, before we
+ * know who. The UI shows "Attributing…" against these utterances rather than
+ * "Unknown speaker", because attribution is asynchronous by design: text must
+ * never wait on identity. A later IdentityEvent for the same utterance_ids
+ * replaces it.
+ */
+export interface SpeakerPendingEvent {
+  type: 'speaker_pending';
+  conversation_id: Id;
+  session_speaker: Id;
+  utterance_ids: Id[];
+  /** Speech pooled for this cluster so far, against embed_min_ms. */
+  speech_ms: number;
+  embed_min_ms: number;
+}
+
+/**
+ * A conversation gained a title, or ended. Emitted when recording stops and the
+ * transcript has been named, so an open list updates without a reload.
+ */
+export interface ConversationEvent {
+  type: 'conversation';
+  conversation_id: Id;
+  title?: string;
+  ended_at?: Timestamp;
+}
+
 export interface FactEvent {
   type: 'fact';
   fact_id: Id;
@@ -164,6 +192,8 @@ export interface AmeliaAudioEvent {
 export type AmeliaEvent =
   | UtteranceEvent
   | IdentityEvent
+  | SpeakerPendingEvent
+  | ConversationEvent
   | FactEvent
   | PromiseEvent
   | AmeliaStepEvent
