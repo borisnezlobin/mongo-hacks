@@ -114,12 +114,11 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
     <View style={styles.container}>
       <View style={styles.pageHeader}>
         <View style={styles.wordmarkRow}>
-          <View>
-            <AppText variant="title">What changed</AppText>
-            <AppText variant="caption">The facts and commitments that moved</AppText>
-          </View>
+          <AppText variant="title">Amelia</AppText>
           <AppText variant="caption">
-            {changes.length > 0 ? `${changes.length} ${changes.length === 1 ? 'change' : 'changes'}` : 'All caught up'}
+            {openPromiseCount > 0
+              ? `${openPromiseCount} open ${openPromiseCount === 1 ? 'loop' : 'loops'}`
+              : 'All caught up'}
           </AppText>
         </View>
       </View>
@@ -129,28 +128,22 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.section}>
-          <SectionHeader
-            title="Memory diff"
-            action={<Chip label={`${openPromiseCount} open ${openPromiseCount === 1 ? 'loop' : 'loops'}`} />}
-          />
-          {changes.length > 0 ? changes.slice(0, 6).map((change, index) => (
-            <ContextChangeCard
-              key={change.id}
-              change={change}
-              person={state.people[change.person_id]}
-              defaultExpanded={index === 0}
-              onOpenConversation={change.conversation_id
-                ? () => navigation.openConversation(change.conversation_id!)
-                : undefined}
-            />
-          )) : (
-            <EmptyState
-              title="No context has changed yet"
-              body="When someone corrects a fact, Amelia will preserve both versions and show what the update affects."
-            />
-          )}
-        </View>
+        {changes.length > 0 ? (
+          <View style={styles.section}>
+            <SectionHeader title="What changed" />
+            {changes.slice(0, 3).map((change, index) => (
+              <ContextChangeCard
+                key={change.id}
+                change={change}
+                person={state.people[change.person_id]}
+                defaultExpanded={index === 0}
+                onOpenConversation={change.conversation_id
+                  ? () => navigation.openConversation(change.conversation_id!)
+                  : undefined}
+              />
+            ))}
+          </View>
+        ) : null}
 
         {result ? (
           <Card style={styles.answerCard}>
