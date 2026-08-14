@@ -156,8 +156,8 @@ function Shell() {
 
   const tabBarHeight = layout.tabBarHeight + Math.max(insets.bottom, spacing.sm);
   const recordingBarOffset = tabBarHeight + spacing.md;
-  const ameliaPillOffset = recordingBarOffset + 74;
-  const contentInset = ameliaPillOffset + 150;
+  const ameliaPillOffset = recordingBarOffset + 150;
+  const contentInset = ameliaPillOffset + 96;
 
   const showFloatingBars = navigation.route.name !== 'person';
 
@@ -238,6 +238,9 @@ function Shell() {
       {showFloatingBars ? (
         <>
           <AmeliaPill
+            // Idle, the pill is an "Ask Amelia" affordance — which Home already provides.
+            // Showing both put two ask fields on one screen.
+            hidden={!state.amelia && navigation.route.name === 'tabs' && navigation.tab === 'home'}
             turn={state.amelia}
             bottomOffset={ameliaPillOffset}
             onPress={() => navigation.openConversation(liveConversationId)}

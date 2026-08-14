@@ -68,7 +68,8 @@ type Action =
   | { kind: 'dismiss-unknown-card' }
   | { kind: 'set-live-conversation'; conversationId: Id | null }
   | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id }
-  | { kind: 'upsert-conversations'; conversations: Conversation[] };
+  | { kind: 'upsert-conversations'; conversations: Conversation[] }
+  | { kind: 'upsert-people'; people: Person[] };
 
 const UNNAMED_PATTERN = /^(unknown|unnamed|speaker\b)/i;
 
@@ -408,6 +409,26 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
       return { ...state, conversations };
     }
 
+    /**
+     * Utterances carry a person_id, but without the person record behind it every speaker
+     * renders as "Unknown speaker". Names the owner set locally are never overwritten by a
+     * server record that has not caught up.
+     */
+    case 'upsert-people': {
+      const people = { ...state.people };
+      for (const incoming of action.people) {
+        const existing = people[incoming._id];
+        people[incoming._id] = {
+          ...existing,
+          ...incoming,
+          name: existing && !isUnnamed(existing) ? existing.name : incoming.name,
+          avatar_uri: existing?.avatar_uri,
+          voiceprint_id: existing?.voiceprint_id,
+        } as PersonRecord;
+      }
+      return { ...state, people };
+    }
+
     case 'dismiss-unknown-card':
       return { ...state, unknownCardDismissed: true };
 
@@ -430,6 +451,7 @@ interface StoreValue {
   dismissUnknownCard(): void;
   attributeUtterances(utteranceIds: Id[], personId: Id): void;
   upsertConversations(conversations: Conversation[]): void;
+  upsertPeople(people: Person[]): void;
   setLiveConversation(conversationId: Id | null): void;
 }
 
@@ -458,19 +480,31 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
     }, SSE_DEBOUNCE_MS);
   }, []);
 
-  const value = useMemo<StoreValue>(() => ({
-    state,
-    ingest,
-    namePerson: (personId, name, relationship, isOwner) => dispatch({ kind: 'name-person', personId, name, relationship, isOwner }),
-    setAvatar: (personId, uri) => dispatch({ kind: 'set-avatar', personId, uri }),
-    closePromise: (promiseId) => dispatch({ kind: 'close-promise', promiseId }),
-    reopenPromise: (promiseId) => dispatch({ kind: 'reopen-promise', promiseId }),
-    renameConversation: (conversationId, title) => dispatch({ kind: 'rename-conversation', conversationId, title }),
-    dismissUnknownCard: () => dispatch({ kind: 'dismiss-unknown-card' }),
-    attributeUtterances: (utteranceIds, personId) => dispatch({ kind: 'attribute-utterances', utteranceIds, personId }),
-    upsertConversations: (conversations) => dispatch({ kind: 'upsert-conversations', conversations }),
-    setLiveConversation: (conversationId) => dispatch({ kind: 'set-live-conversation', conversationId }),
-  }), [state, ingest]);
+  /**
+   * Every action is dispatch-only, so they are built once. They used to be rebuilt with
+   * `state`, which made them unstable effect dependencies: the Home hydrate re-ran on each
+   * state change and its cleanup cancelled the in-flight fetch, so conversations never
+   * finished loading and the list stayed empty.
+   */
+  const actions = useMemo(() => ({
+    namePerson: (personId: Id, name: string, relationship?: string, isOwner?: boolean) =>
+      dispatch({ kind: 'name-person' as const, personId, name, relationship, isOwner }),
+    setAvatar: (personId: Id, uri: string) => dispatch({ kind: 'set-avatar' as const, personId, uri }),
+    closePromise: (promiseId: Id) => dispatch({ kind: 'close-promise' as const, promiseId }),
+    reopenPromise: (promiseId: Id) => dispatch({ kind: 'reopen-promise' as const, promiseId }),
+    renameConversation: (conversationId: Id, title: string) =>
+      dispatch({ kind: 'rename-conversation' as const, conversationId, title }),
+    dismissUnknownCard: () => dispatch({ kind: 'dismiss-unknown-card' as const }),
+    attributeUtterances: (utteranceIds: Id[], personId: Id) =>
+      dispatch({ kind: 'attribute-utterances' as const, utteranceIds, personId }),
+    upsertConversations: (conversations: Conversation[]) =>
+      dispatch({ kind: 'upsert-conversations' as const, conversations }),
+    upsertPeople: (people: Person[]) => dispatch({ kind: 'upsert-people' as const, people }),
+    setLiveConversation: (conversationId: Id | null) =>
+      dispatch({ kind: 'set-live-conversation' as const, conversationId }),
+  }), []);
+
+  const value = useMemo<StoreValue>(() => ({ state, ingest, ...actions }), [state, ingest, actions]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
