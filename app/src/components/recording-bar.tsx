@@ -190,12 +190,16 @@ export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarP
       <View style={styles.column}>
         {streaming ? <LiveWaveform /> : null}
         <RecordButton streaming={streaming} busy={connecting} failed={failed} onPress={press} />
-        <Pressable onPress={onOpenLive} disabled={!streaming} style={styles.copy}>
-          <AppText variant="bodyStrong" align="center" color={streaming || failed ? colors.live : colors.ink}>
-            {label}
-          </AppText>
-          <AppText variant="caption" align="center" numberOfLines={2}>{helper}</AppText>
-        </Pressable>
+        {/* No caption under the mic: the button's colour and glyph already say whether
+            Amelia is listening, and the label crowded the transcript beneath it. The
+            failure reason is the one thing worth words, so it alone still renders. */}
+        {failed ? (
+          <Pressable onPress={onOpenLive} disabled style={styles.copy}>
+            <AppText variant="caption" align="center" color={colors.live} numberOfLines={2}>
+              {failure ?? "Couldn't start — tap to try again"}
+            </AppText>
+          </Pressable>
+        ) : null}
       </View>
     </View>
   );
