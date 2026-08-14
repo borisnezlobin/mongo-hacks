@@ -208,6 +208,55 @@ export async function startGlassesServer(deps: ServerDependencies): Promise<bool
     else proxied.end();
   });
 
+  // ---- /api WebSocket upgrades → Amelia's /stream -------------------------
+  // The Express middleware above only sees ordinary requests; an upgrade never
+  // reaches it, so the phone's mic uplink (wss://…/api/stream) failed with
+  // "Audio uplink socket failed to connect" while every HTTP route worked.
+  //
+  // AppServer exposes no handle on its http.Server, so wrap the Express app's
+  // listen() to capture the one it creates. Must be installed BEFORE start().
+  const expressApp = instance.getExpressApp() as any;
+  const originalListen = expressApp.listen.bind(expressApp);
+  expressApp.listen = (...args: unknown[]) => {
+    const httpServer = originalListen(...args);
+    httpServer.on('upgrade', (request: any, socket: any, head: Buffer) => {
+      // Only our prefix. The SDK owns every other upgrade on this server, and
+      // stealing one would break its own transport.
+      if (!request.url?.startsWith('/api/')) return;
+
+      const upstreamPort = Number(process.env.PORT ?? 3000);
+      const headers = { ...request.headers, host: `127.0.0.1:${upstreamPort}` };
+      const proxied = httpRequest({
+        host: '127.0.0.1',
+        port: upstreamPort,
+        path: request.url.slice('/api'.length),
+        method: request.method,
+        headers,
+      });
+
+      proxied.on('upgrade', (upstreamResponse: any, upstreamSocket: any, upstreamHead: Buffer) => {
+        const statusLine = `HTTP/1.1 ${upstreamResponse.statusCode} ${upstreamResponse.statusMessage}\r\n`;
+        const raw = Object.entries(upstreamResponse.headers)
+          .map(([key, value]) => `${key}: ${value}\r\n`)
+          .join('');
+        socket.write(`${statusLine}${raw}\r\n`);
+        if (upstreamHead?.length) socket.unshift(upstreamHead);
+        // Binary PCM frames in one direction, control frames back.
+        upstreamSocket.pipe(socket).pipe(upstreamSocket);
+      });
+
+      proxied.on('error', (error: Error) => {
+        console.error('[glasses] /api upgrade proxy error:', error.message);
+        socket.destroy();
+      });
+      socket.on('error', () => proxied.destroy());
+
+      if (head?.length) proxied.write(head);
+      proxied.end();
+    });
+    return httpServer;
+  };
+
   await instance.start();
   server = instance;
   console.log(`[glasses] MentraOS app server on :${port} (webhook: /webhook)`);
