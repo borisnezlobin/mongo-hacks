@@ -4,8 +4,7 @@ import {
   ArrowUpIcon,
   CaretRightIcon,
   ChatsCircleIcon,
-  SparkleIcon,
-  UserPlusIcon,
+  MagnifyingGlassIcon,
   XIcon,
 } from 'phosphor-react-native';
 import { AppText } from '../components/app-text';
@@ -16,17 +15,15 @@ import { api } from '../lib/api';
 import { useAsk } from '../lib/ask';
 import { formatDay, formatDuration } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
-import { displayName, useConversations, useStore, useUnknownPeople, type PersonRecord } from '../lib/store';
+import { displayName, useConversations, useStore, type PersonRecord } from '../lib/store';
 
 interface HomeScreenProps {
-  onNamePerson(person: PersonRecord): void;
   contentInset: number;
 }
 
-export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
-  const { state, dismissUnknownCard, ingest, upsertConversations, upsertPeople } = useStore();
+export function HomeScreen({ contentInset }: HomeScreenProps) {
+  const { state, ingest, upsertConversations, upsertPeople } = useStore();
   const conversations = useConversations();
-  const unknown = useUnknownPeople();
   const navigation = useNavigation();
   const { ask, clear, pending, result } = useAsk();
   const [query, setQuery] = useState('');
@@ -36,8 +33,6 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
     () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,
     [state.promises],
   );
-
-  const showUnknownCard = unknown.length > 0 && !state.unknownCardDismissed;
 
   // A conversation with no turns is a shell — a session that captured nothing, or a record
   // whose utterances have not loaded. Listing them gives you rows that open onto nothing.
@@ -143,7 +138,7 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         <View style={styles.askSection}>
           <SectionHeader title="Ask across memory" />
           <View style={styles.askField}>
-            <SparkleIcon size={18} color={colors.accent} weight="fill" />
+            <MagnifyingGlassIcon size={18} color={colors.inkFaint} />
             <TextInput
               value={query}
               onChangeText={setQuery}
@@ -171,41 +166,6 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
           </View>
         </View>
 
-        {showUnknownCard ? (
-          <Card style={styles.unknownCard}>
-            <View style={styles.unknownHeader}>
-              <View style={styles.unknownAvatars}>
-                {unknown.slice(0, 3).map((person, index) => (
-                  <View key={person._id} style={[styles.stackedAvatar, index > 0 && styles.stackedAvatarOverlap]}>
-                    <Avatar person={person} size={34} />
-                  </View>
-                ))}
-              </View>
-              <Pressable onPress={dismissUnknownCard} hitSlop={10} accessibilityLabel="Dismiss">
-                <XIcon size={16} color={colors.inkFaint} />
-              </Pressable>
-            </View>
-            <AppText variant="heading">
-              {unknown.length} {unknown.length === 1 ? 'voice' : 'voices'} without a name
-            </AppText>
-            <AppText variant="body" color={colors.inkMuted}>
-              Amelia kept everything they said. Give them a name and it all files itself.
-            </AppText>
-            <View style={styles.unknownActions}>
-              {unknown.slice(0, 3).map((person) => (
-                <Pressable
-                  key={person._id}
-                  onPress={() => onNamePerson(person)}
-                  style={({ pressed }) => [styles.nameButton, pressed && styles.dimmed]}
-                >
-                  <UserPlusIcon size={15} color={colors.accent} weight="bold" />
-                  <AppText variant="caption" color={colors.accent}>Name this voice</AppText>
-                </Pressable>
-              ))}
-            </View>
-          </Card>
-        ) : null}
-
         <View style={styles.section}>
           <SectionHeader title="Recent conversations" />
           {listedConversations.length === 0 ? (
@@ -226,13 +186,9 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
                   onPress={() => navigation.openConversation(conversation._id)}
                   style={({ pressed }) => [styles.conversationRow, pressed && styles.dimmed]}
                 >
-                  <View style={styles.conversationAvatars}>
-                    {participants.slice(0, 3).map((person, index) => (
-                      <View key={person._id} style={[styles.stackedAvatar, index > 0 && styles.stackedAvatarOverlap]}>
-                        <Avatar person={person} size={30} />
-                      </View>
-                    ))}
-                  </View>
+                  {/* Copy first, avatars after. A leading avatar stack is as wide as the
+                      conversation has participants, so every title started at a different
+                      x and the list could not be read down the left edge. */}
                   <View style={styles.conversationCopy}>
                     <View style={styles.conversationTitleRow}>
                       <AppText variant="bodyStrong" numberOfLines={1} style={styles.flexible}>
@@ -240,11 +196,18 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
                       </AppText>
                       {isLive ? <Chip label="Live" tone="live" /> : null}
                     </View>
-                    <AppText variant="caption">
+                    <AppText variant="caption" numberOfLines={1}>
                       {formatDay(conversation.started_at)}
                       {conversation.ended_at ? ` · ${formatDuration(conversation.started_at, conversation.ended_at)}` : ''}
                       {participants.length > 0 ? ` · ${participants.map((person) => displayName(person)).join(', ')}` : ''}
                     </AppText>
+                  </View>
+                  <View style={styles.conversationAvatars}>
+                    {participants.slice(0, 3).map((person, index) => (
+                      <View key={person._id} style={[styles.stackedAvatar, index > 0 && styles.stackedAvatarOverlap]}>
+                        <Avatar person={person} size={26} />
+                      </View>
+                    ))}
                   </View>
                   <CaretRightIcon size={16} color={colors.inkFaint} />
                 </Pressable>
@@ -297,21 +260,8 @@ const styles = StyleSheet.create({
   answerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   citation: { flexDirection: 'row', gap: spacing.md, alignItems: 'center' },
   citationCopy: { flex: 1, gap: 1 },
-  unknownCard: { gap: spacing.sm },
-  unknownHeader: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  unknownAvatars: { flexDirection: 'row' },
   stackedAvatar: { borderRadius: radii.pill, backgroundColor: colors.surface },
   stackedAvatarOverlap: { marginLeft: -10 },
-  unknownActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
-  nameButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 7,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accentSoft,
-  },
   section: { gap: spacing.xs },
   conversationRow: {
     flexDirection: 'row',
