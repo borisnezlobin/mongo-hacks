@@ -204,6 +204,23 @@ describe('event store', () => {
     });
   });
 
+  it('removes a deleted conversation and its turns immediately', () => {
+    let state = applyEvents(createInitialState(), [
+      { type: 'utterance', utterance_id: 'u1', conversation_id: 'c-1', text: 'One', start_ms: 0, end_ms: 900, is_final: true },
+      { type: 'utterance', utterance_id: 'u2', conversation_id: 'c-2', text: 'Two', start_ms: 0, end_ms: 900, is_final: true },
+    ]);
+    state = reduce(state, { kind: 'set-live-conversation', conversationId: 'c-1' });
+
+    state = reduce(state, { kind: 'delete-conversation', conversationId: 'c-1' });
+
+    expect(state.conversations['c-1']).toBeUndefined();
+    expect(state.utterances['u1']).toBeUndefined();
+    // The other conversation is untouched, and nothing is left marked live.
+    expect(state.conversations['c-2']).toBeDefined();
+    expect(state.utterances['u2']).toBeDefined();
+    expect(state.liveConversationId).toBeNull();
+  });
+
   it('tracks conversation participants as speakers arrive', () => {
     const state = applyEvents(createInitialState(), scriptEvents);
     const conversation = state.conversations[LIVE_CONVERSATION_ID];

@@ -72,6 +72,9 @@ export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void 
 
   app.get('/conversations', async (context) => context.json(await store.listConversations()));
 
+  app.delete('/conversations/:id', async (context) =>
+    context.json(await store.deleteConversation(context.req.param('id'))));
+
   app.get('/conversations/:id', async (context) => {
     const conversationId = context.req.param('id');
     const utterances = await store.listUtterances(conversationId);

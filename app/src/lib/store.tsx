@@ -82,6 +82,7 @@ export type Action =
   | { kind: 'close-promise'; promiseId: Id }
   | { kind: 'reopen-promise'; promiseId: Id }
   | { kind: 'rename-conversation'; conversationId: Id; title: string }
+  | { kind: 'delete-conversation'; conversationId: Id }
   | { kind: 'dismiss-unknown-card' }
   | { kind: 'set-live-conversation'; conversationId: Id | null }
   | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id }
@@ -408,6 +409,24 @@ export function reduce(state: AmeliaState, action: Action): AmeliaState {
       return { ...state, promises: { ...state.promises, [action.promiseId]: { ...existing, status } } };
     }
 
+    case 'delete-conversation': {
+      // Drop the conversation and its turns locally straight away. The server
+      // call is fire-and-forget, and polling re-delivers anything that did not
+      // actually delete, so an optimistic removal cannot strand the UI.
+      const conversations = { ...state.conversations };
+      delete conversations[action.conversationId];
+      const utterances = Object.fromEntries(
+        Object.entries(state.utterances).filter(([, u]) => u.conversation_id !== action.conversationId),
+      );
+      return {
+        ...state,
+        conversations,
+        utterances,
+        liveConversationId:
+          state.liveConversationId === action.conversationId ? null : state.liveConversationId,
+      };
+    }
+
     case 'rename-conversation': {
       const existing = state.conversations[action.conversationId];
       if (!existing) return state;
@@ -529,6 +548,7 @@ interface StoreValue {
   ingest(event: AmeliaEvent): void;
   namePerson(personId: Id, name: string, relationship?: string, isOwner?: boolean): void;
   setAvatar(personId: Id, uri: string): void;
+  deleteConversation(conversationId: Id): void;
   hydrateAvatars(avatars: Record<Id, string>): void;
   closePromise(promiseId: Id): void;
   reopenPromise(promiseId: Id): void;
@@ -575,6 +595,8 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
     namePerson: (personId: Id, name: string, relationship?: string, isOwner?: boolean) =>
       dispatch({ kind: 'name-person' as const, personId, name, relationship, isOwner }),
     setAvatar: (personId: Id, uri: string) => dispatch({ kind: 'set-avatar' as const, personId, uri }),
+    deleteConversation: (conversationId: Id) =>
+      dispatch({ kind: 'delete-conversation' as const, conversationId }),
     hydrateAvatars: (avatars: Record<Id, string>) => dispatch({ kind: 'hydrate-avatars' as const, avatars }),
     closePromise: (promiseId: Id) => dispatch({ kind: 'close-promise' as const, promiseId }),
     reopenPromise: (promiseId: Id) => dispatch({ kind: 'reopen-promise' as const, promiseId }),
