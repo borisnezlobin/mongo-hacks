@@ -33,6 +33,7 @@ import {
   useStore,
   type PersonRecord,
 } from './src/lib/store';
+import { loadAvatars } from './src/lib/avatars';
 import { ConversationScreen } from './src/screens/conversation';
 import { HomeScreen } from './src/screens/home';
 import { LoopsScreen } from './src/screens/loops';
@@ -75,7 +76,13 @@ export default function App() {
 }
 
 function Shell() {
-  const { state, ingest, namePerson, attributeUtterances, setLiveConversation } = useStore();
+  const { state, ingest, namePerson, attributeUtterances, setLiveConversation, hydrateAvatars } = useStore();
+
+  // Profile pictures live on disk under the person's id, so a cold start has to
+  // read them back in — the server's person list carries everything else.
+  useEffect(() => {
+    hydrateAvatars(loadAvatars());
+  }, [hydrateAvatars]);
   const navigation = useNavigation();
   const insets = useInsets();
   const [, setStreamSource] = useState<StreamSource>('connecting');
@@ -308,7 +315,7 @@ function TabScreens({
 }) {
   if (tab === 'people') return <PeopleScreen contentInset={contentInset} onEnrollOwner={onEnrollOwner} />;
   if (tab === 'loops') return <LoopsScreen contentInset={contentInset} />;
-  return <HomeScreen contentInset={contentInset} onNamePerson={onNamePerson} />;
+  return <HomeScreen contentInset={contentInset} />;
 }
 
 const styles = StyleSheet.create({
