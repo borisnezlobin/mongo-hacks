@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, TextInput, View } from 'react-native';
-import { SparkleIcon } from 'phosphor-react-native';
+import { ChatCircleIcon } from 'phosphor-react-native';
 import { AppText } from './app-text';
 import { Button } from './ui';
 import { colors, radii, spacing } from '../constants/theme';
@@ -36,7 +36,7 @@ export function SummonSheet({ visible, pending, onCancel, onSummon }: SummonShee
         <View style={styles.sheet}>
           <View style={styles.grabber} />
           <View style={styles.header}>
-            <SparkleIcon size={28} color={colors.accent} weight="fill" />
+            <ChatCircleIcon size={28} color={colors.accent} weight="fill" />
             <View style={styles.headerCopy}>
               <AppText variant="title">Ask Amelia</AppText>
               <AppText variant="body" color={colors.inkMuted}>

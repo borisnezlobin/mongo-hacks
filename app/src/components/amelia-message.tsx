@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from 'react-native';
-import { SparkleIcon, SpeakerHighIcon } from 'phosphor-react-native';
+import { SpeakerHighIcon } from 'phosphor-react-native';
 import { AppText } from './app-text';
 import { colors, radii, spacing } from '../constants/theme';
 import type { AmeliaTurn } from '../lib/store';
@@ -34,8 +34,10 @@ export function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
         },
       ]}
     >
+      {/* A monogram rather than an icon. Amelia's turns sit in the same gutter
+          as everyone else's avatar, so the mark should read as a participant. */}
       <View style={styles.mark}>
-        <SparkleIcon size={17} color={colors.accent} weight="fill" />
+        <AppText variant="bodyStrong" color={colors.accent}>A</AppText>
       </View>
 
       <View style={styles.column}>
