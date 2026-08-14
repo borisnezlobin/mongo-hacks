@@ -10,10 +10,12 @@ import {
 } from 'phosphor-react-native';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
+import { ContextChangeCard } from '../components/context-change-card';
 import { Card, Chip, EmptyState, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { api } from '../lib/api';
 import { useAsk } from '../lib/ask';
+import { deriveContextChanges, type ContextChange } from '../lib/context-changes';
 import { formatDay, formatDuration } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
 import { displayName, useConversations, useStore, useUnknownPeople, type PersonRecord } from '../lib/store';
@@ -30,6 +32,14 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
   const navigation = useNavigation();
   const { ask, clear, pending, result } = useAsk();
   const [query, setQuery] = useState('');
+  const [persistedChanges, setPersistedChanges] = useState<ContextChange[]>([]);
+
+  const liveChanges = useMemo(() => deriveContextChanges(state), [state]);
+  const changes = useMemo(() => {
+    const merged = new Map(persistedChanges.map((change) => [change.id, change]));
+    for (const change of liveChanges) merged.set(change.id, change);
+    return [...merged.values()].sort((a, b) => b.after.valid_from.localeCompare(a.after.valid_from));
+  }, [liveChanges, persistedChanges]);
 
   const openPromiseCount = useMemo(
     () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,
@@ -83,50 +93,31 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
     return () => { cancelled = true; };
   }, [ingest, upsertConversations]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void api.listContextChanges()
+      .then((records) => { if (!cancelled) setPersistedChanges(records); })
+      .catch(() => {
+        // The local append-only graph keeps the demo useful without the server.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   const submit = () => {
     ask(query);
   };
 
   return (
     <View style={styles.container}>
-      <View style={styles.askHeader}>
+      <View style={styles.pageHeader}>
         <View style={styles.wordmarkRow}>
-          <AppText variant="title">Amelia</AppText>
+          <View>
+            <AppText variant="title">What changed</AppText>
+            <AppText variant="caption">The facts and commitments that moved</AppText>
+          </View>
           <AppText variant="caption">
-            {openPromiseCount > 0 ? `${openPromiseCount} open ${openPromiseCount === 1 ? 'loop' : 'loops'}` : 'All caught up'}
+            {changes.length > 0 ? `${changes.length} ${changes.length === 1 ? 'change' : 'changes'}` : 'All caught up'}
           </AppText>
-        </View>
-
-        <View style={styles.askField}>
-          <SparkleIcon size={18} color={colors.accent} weight="fill" />
-          <TextInput
-            value={query}
-            onChangeText={setQuery}
-            placeholder="Ask about anyone you've met"
-            placeholderTextColor={colors.inkFaint}
-            style={styles.askInput}
-            returnKeyType="search"
-            onSubmitEditing={submit}
-          />
-          {query.length > 0 ? (
-            <Pressable
-              onPress={() => { setQuery(''); clear(); }}
-              accessibilityLabel="Clear"
-              hitSlop={8}
-            >
-              <XIcon size={16} color={colors.inkFaint} />
-            </Pressable>
-          ) : null}
-          <Pressable
-            onPress={submit}
-            disabled={query.trim().length === 0 || pending}
-            style={({ pressed }) => [styles.askSubmit, (pressed || query.trim().length === 0) && styles.dimmed]}
-            accessibilityLabel="Ask Amelia"
-          >
-            {pending
-              ? <ActivityIndicator size="small" color={colors.inkInverse} />
-              : <ArrowUpIcon size={16} color={colors.inkInverse} weight="bold" />}
-          </Pressable>
         </View>
       </View>
 
@@ -135,6 +126,29 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
+        <View style={styles.section}>
+          <SectionHeader
+            title="Memory diff"
+            action={<Chip label={`${openPromiseCount} open ${openPromiseCount === 1 ? 'loop' : 'loops'}`} />}
+          />
+          {changes.length > 0 ? changes.slice(0, 6).map((change, index) => (
+            <ContextChangeCard
+              key={change.id}
+              change={change}
+              person={state.people[change.person_id]}
+              defaultExpanded={index === 0}
+              onOpenConversation={change.conversation_id
+                ? () => navigation.openConversation(change.conversation_id!)
+                : undefined}
+            />
+          )) : (
+            <EmptyState
+              title="No context has changed yet"
+              body="When someone corrects a fact, Amelia will preserve both versions and show what the update affects."
+            />
+          )}
+        </View>
+
         {result ? (
           <Card style={styles.answerCard}>
             <View style={styles.answerHeader}>
@@ -162,6 +176,37 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
             })}
           </Card>
         ) : null}
+
+        <View style={styles.askSection}>
+          <SectionHeader title="Ask across memory" />
+          <View style={styles.askField}>
+            <SparkleIcon size={18} color={colors.accent} weight="fill" />
+            <TextInput
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Ask about anyone you've met"
+              placeholderTextColor={colors.inkFaint}
+              style={styles.askInput}
+              returnKeyType="search"
+              onSubmitEditing={submit}
+            />
+            {query.length > 0 ? (
+              <Pressable onPress={() => { setQuery(''); clear(); }} accessibilityLabel="Clear" hitSlop={8}>
+                <XIcon size={16} color={colors.inkFaint} />
+              </Pressable>
+            ) : null}
+            <Pressable
+              onPress={submit}
+              disabled={query.trim().length === 0 || pending}
+              style={({ pressed }) => [styles.askSubmit, (pressed || query.trim().length === 0) && styles.dimmed]}
+              accessibilityLabel="Ask Amelia"
+            >
+              {pending
+                ? <ActivityIndicator size="small" color={colors.inkInverse} />
+                : <ArrowUpIcon size={16} color={colors.inkInverse} weight="bold" />}
+            </Pressable>
+          </View>
+        </View>
 
         {showUnknownCard ? (
           <Card style={styles.unknownCard}>
@@ -251,13 +296,13 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  askHeader: {
+  pageHeader: {
     paddingHorizontal: layout.screenPadding,
     paddingBottom: spacing.md,
-    gap: spacing.md,
     backgroundColor: colors.canvas,
   },
-  wordmarkRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between' },
+  wordmarkRow: { flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between' },
+  askSection: { gap: 0 },
   askField: {
     flexDirection: 'row',
     alignItems: 'center',

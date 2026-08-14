@@ -40,9 +40,12 @@ export function hasExplicitChangeCue(text: string): boolean {
   return EXPLICIT_CHANGE_CUE.test(text);
 }
 
-export function liveContextReply(claim: string): string {
+export function liveContextReply(claim: string, relatedLoopCount = 0): string {
   const clean = claim.trim().replace(/[.!?]+$/, '');
-  return `That changed: ${clean}.`;
+  const ripple = relatedLoopCount > 0
+    ? ` I found ${relatedLoopCount} related open ${relatedLoopCount === 1 ? 'loop' : 'loops'} worth reviewing.`
+    : '';
+  return `That changed: ${clean}.${ripple}`;
 }
 
 function humanize(attribute: string): string {
@@ -105,7 +108,31 @@ export function registerLiveContextInterventions(
         message: `Detected a live update to ${subject}'s ${humanize(fact.attribute)}`,
       });
 
-      const text = liveContextReply(fact.claim);
+      deps.bus.emit({
+        type: 'amelia_step',
+        request_id: requestId,
+        step: 'reason',
+        message: 'Current value will drive actions; the previous value stays in history',
+      });
+
+      const related = typeof deps.memory.searchMemory === 'function'
+        ? await deps.memory
+            .searchMemory(`${subject} ${humanize(fact.attribute)} ${fact.claim}`)
+            .catch(() => [])
+        : [];
+      const relatedLoopCount = new Set(
+        related.filter((result) => result.kind === 'promise').map((result) => result.id),
+      ).size;
+      deps.bus.emit({
+        type: 'amelia_step',
+        request_id: requestId,
+        step: 'act',
+        message: relatedLoopCount > 0
+          ? `Flagged ${relatedLoopCount} related open ${relatedLoopCount === 1 ? 'loop' : 'loops'} for review`
+          : 'No related open loops surfaced',
+      });
+
+      const text = liveContextReply(fact.claim, relatedLoopCount);
       const spoken = await speakImpl(text);
       const audio: AmeliaAudioEvent = {
         type: 'amelia_audio',

@@ -11,6 +11,7 @@ import type {
   SearchMemoryResult,
 } from '../../../shared/contracts';
 import { API_BASE_URL } from './config';
+import type { ContextChange } from './context-changes';
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -46,7 +47,10 @@ export const api = {
     if (personId) params.set('person_id', personId);
     return request<SearchMemoryResult[]>(`/memory/search?${params.toString()}`);
   },
+  listContextChanges: (limit = 10) => request<ContextChange[]>(`/memory/changes?limit=${limit}`),
   ask: (body: AskRequest) => post<AskResponse>('/ask', body),
+  summon: (text: string) =>
+    post<{ text: string; steps: unknown[] }>('/amelia/summon', { text }),
   createReminder: (promiseId: Id, fireAt: string) =>
     post<Reminder>('/reminders', { promise_id: promiseId, fire_at: fireAt }),
   debugUtterance: (body: DebugUtteranceRequest) => post('/debug/utterance', body),

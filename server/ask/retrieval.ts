@@ -129,7 +129,7 @@ export async function searchPromisesAndUtterances(query: string, personId?: Id):
   const [promises, utterances] = await Promise.all([
     collections
       .promises()
-      .find({ owner_id: OWNER_ID, ...(personId ? { person_id: personId } : {}), text: pattern })
+      .find({ owner_id: OWNER_ID, status: 'open', ...(personId ? { person_id: personId } : {}), text: pattern })
       .limit(5)
       .toArray(),
     collections

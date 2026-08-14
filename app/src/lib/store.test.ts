@@ -67,7 +67,9 @@ describe('event store', () => {
     const state = applyEvents(createInitialState(), scriptEvents.slice(0, contextAudioIndex + 1));
 
     expect(state.amelia?.kind).toBe('context_update');
-    expect(state.amelia?.reply).toBe('That changed: Maya is moving to Oakland on September 20.');
+    expect(state.amelia?.reply).toBe(
+      'That changed: Maya is moving to Oakland on September 20. I found 1 related open loop worth reviewing.',
+    );
     expect(state.amelia?.conversation_id).toBe(LIVE_CONVERSATION_ID);
   });
 

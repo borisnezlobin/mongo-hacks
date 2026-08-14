@@ -10,26 +10,31 @@ interface AmeliaPillProps {
   turn: AmeliaTurn | null;
   bottomOffset: number;
   onPress?(): void;
+  /** Press-and-hold manual summon — the stage fallback when the voice gate fails. */
+  onLongPress?(): void;
 }
 
-/** One pill, one turn. It updates in place rather than stacking status lines. */
-export function AmeliaPill({ turn, bottomOffset, onPress }: AmeliaPillProps) {
+/**
+ * Always present so the press-and-hold summon is discoverable even before the
+ * first turn. With an active turn it shows the latest step and a tap opens the
+ * transcript; idle it reads as a quiet "Ask Amelia" affordance.
+ */
+export function AmeliaPill({ turn, bottomOffset, onPress, onLongPress }: AmeliaPillProps) {
   const entrance = useRef(new Animated.Value(0)).current;
-  const visible = Boolean(turn);
 
   useEffect(() => {
     Animated.timing(entrance, {
-      toValue: visible ? 1 : 0,
+      toValue: 1,
       duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: true,
     }).start();
-  }, [visible, entrance]);
+  }, [entrance]);
 
-  if (!turn) return null;
-
-  const latest = turn.reply ?? turn.steps[turn.steps.length - 1]?.message ?? 'Thinking';
-  const speaking = Boolean(turn.reply);
+  const latest = turn
+    ? turn.reply ?? turn.steps[turn.steps.length - 1]?.message ?? 'Thinking'
+    : 'Ask Amelia';
+  const speaking = Boolean(turn?.reply);
 
   return (
     <Animated.View
@@ -44,11 +49,18 @@ export function AmeliaPill({ turn, bottomOffset, onPress }: AmeliaPillProps) {
       ]}
     >
       <GlassSurface style={styles.pill}>
-        <Pressable style={styles.inner} onPress={onPress} accessibilityRole="button">
+        <Pressable
+          style={styles.inner}
+          onPress={onPress}
+          onLongPress={onLongPress}
+          delayLongPress={350}
+          accessibilityRole="button"
+          accessibilityLabel="Ask Amelia. Long press to type a request."
+        >
           {speaking
             ? <SpeakerHighIcon size={18} color={colors.accent} weight="fill" />
-            : <SparkleIcon size={18} color={colors.accent} weight="fill" />}
-          <AppText variant="bodyStrong" numberOfLines={1} style={styles.text}>
+            : <SparkleIcon size={18} color={colors.accent} weight={turn ? 'fill' : 'regular'} />}
+          <AppText variant="bodyStrong" numberOfLines={1} style={styles.text} color={turn ? colors.ink : colors.inkMuted}>
             {latest}
           </AppText>
         </Pressable>

@@ -7,6 +7,9 @@ function dependencies() {
   const bus = new AmeliaBus();
   const memory = {
     getPerson: vi.fn().mockResolvedValue({ name: 'Maya' }),
+    searchMemory: vi.fn().mockResolvedValue([
+      { kind: 'promise', id: 'pr-pack', person_id: 'p-owner', text: 'Help Maya pack', score: 0.82 },
+    ]),
   } as unknown as MemoryApi;
   return { bus, memory } satisfies ServerDependencies;
 }
@@ -65,8 +68,14 @@ describe('live context interventions', () => {
     expect(emitted).toContainEqual(expect.objectContaining({
       type: 'amelia_audio',
       request_id: 'context-f-new',
-      text: 'That changed: Maya moves to Oakland on September 20.',
+      text: 'That changed: Maya moves to Oakland on September 20. I found 1 related open loop worth reviewing.',
       audio_url: '/amelia/audio/context.mp3',
+    }));
+    expect(emitted).toContainEqual(expect.objectContaining({
+      type: 'amelia_step',
+      request_id: 'context-f-new',
+      step: 'act',
+      message: 'Flagged 1 related open loop for review',
     }));
   });
 

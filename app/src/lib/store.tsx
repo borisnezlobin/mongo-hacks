@@ -214,6 +214,17 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
 
     case 'fact': {
       const previous = state.facts[event.fact_id];
+      // Fact events intentionally stay small. Reconnect the live fact to the
+      // finalized turn that immediately preceded extraction so the UI can show
+      // provenance and recorded-room coverage without expanding the frozen bus
+      // contract. Persisted facts already carry this id from Lane B.
+      const inferredSource = Object.values(state.utterances)
+        .filter((utterance) => (
+          utterance.is_final
+          && utterance.person_id === event.person_id
+          && (!state.liveConversationId || utterance.conversation_id === state.liveConversationId)
+        ))
+        .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.end_ms - a.end_ms)[0];
       const fact: Fact = {
         _id: event.fact_id,
         owner_id: OWNER_ID,
@@ -221,7 +232,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
         attribute: event.attribute,
         claim: event.claim,
         claim_normalized: event.claim.toLowerCase(),
-        primary_source_utterance_id: previous?.primary_source_utterance_id ?? '',
+        primary_source_utterance_id: previous?.primary_source_utterance_id ?? inferredSource?._id ?? '',
         valid_from: previous?.valid_from ?? nowIso,
         created_at: previous?.created_at ?? nowIso,
       };

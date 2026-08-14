@@ -22,3 +22,11 @@ Live contradiction feature checkpoint
 [complete] Full suite: 94 tests, repository typecheck, and whitespace audit
 [complete] Atlas/Fireworks fixture acceptance and canonical Amelia agent acceptance
 [complete] Isolated end-to-end contradiction audit: supersession, proactive step, and ElevenLabs audio
+
+Shared-context originality checkpoint
+
+[complete] MongoDB-backed Memory Diff read model preserves before/now lineage and source conversation
+[complete] Context Ripple links changed facts to related open promises and exposes the consequence in Amelia's live trace
+[complete] Context Gap compares recorded participants before each source turn and cautiously identifies people who may retain earlier context
+[complete] Home now leads with expandable change cards; Ask and recent conversations remain available below
+[complete] Focused tests, 97-test full suite, repository typecheck, Atlas read audit, and iOS production bundle

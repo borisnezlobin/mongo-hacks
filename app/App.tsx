@@ -12,10 +12,13 @@ import {
 import { Newsreader_400Regular, Newsreader_500Medium, Newsreader_600SemiBold } from '@expo-google-fonts/newsreader';
 import { useAudioPlayer } from 'expo-audio';
 import { AmeliaPill } from './src/components/amelia-pill';
+import { EnrollSheet } from './src/components/enroll-sheet';
 import { NamingSheet } from './src/components/naming-sheet';
 import { RecordingBar } from './src/components/recording-bar';
+import { SummonSheet } from './src/components/summon-sheet';
 import { TabBar, type TabKey } from './src/components/tab-bar';
 import { colors, layout, spacing } from './src/constants/theme';
+import { api } from './src/lib/api';
 import { useAudioUplink } from './src/lib/audio-uplink';
 import { API_BASE_URL } from './src/lib/config';
 import { subscribeToEvents, type StreamSource } from './src/lib/events';
@@ -70,6 +73,9 @@ function Shell() {
   const [namingTarget, setNamingTarget] = useState<PersonRecord | null>(null);
   const [namingUtteranceIds, setNamingUtteranceIds] = useState<string[]>([]);
   const [namingConversationId, setNamingConversationId] = useState<string | null>(null);
+  const [summonOpen, setSummonOpen] = useState(false);
+  const [summonPending, setSummonPending] = useState(false);
+  const [enrollOpen, setEnrollOpen] = useState(false);
 
   // Every recording gets its own conversation. Reusing one fixed id meant a new session
   // appended to the previous one, so old turns appeared in a brand-new transcript.
@@ -183,6 +189,21 @@ function Shell() {
     setNamingConversationId(source?.conversation_id ?? null);
   };
 
+  // The server emits the steps and the spoken reply over the bus, so the phone
+  // only has to fire the summon — the live trace and audio arrive like any
+  // other Amelia turn.
+  const handleSummon = async (text: string) => {
+    setSummonPending(true);
+    try {
+      await api.summon(text);
+      setSummonOpen(false);
+    } catch {
+      // A dead server leaves the sheet open so the owner can retry on stage.
+    } finally {
+      setSummonPending(false);
+    }
+  };
+
   return (
     <View style={[styles.root, { paddingTop: insets.top + spacing.sm }]}>
       <StatusBar style="dark" />
@@ -193,6 +214,7 @@ function Shell() {
             tab={navigation.tab}
             contentInset={contentInset}
             onNamePerson={openNaming}
+            onEnrollOwner={() => setEnrollOpen(true)}
           />
         ) : null}
 
@@ -219,6 +241,7 @@ function Shell() {
             turn={state.amelia}
             bottomOffset={ameliaPillOffset}
             onPress={() => navigation.openConversation(liveConversationId)}
+            onLongPress={() => setSummonOpen(true)}
           />
           <RecordingBar
             uplink={uplink}
@@ -243,6 +266,15 @@ function Shell() {
         onCancel={() => { setNamingTarget(null); setNamingUtteranceIds([]); }}
         onSave={handleSaveName}
       />
+
+      <SummonSheet
+        visible={summonOpen}
+        pending={summonPending}
+        onCancel={() => setSummonOpen(false)}
+        onSummon={handleSummon}
+      />
+
+      <EnrollSheet visible={enrollOpen} onClose={() => setEnrollOpen(false)} />
     </View>
   );
 }
@@ -251,12 +283,14 @@ function TabScreens({
   tab,
   contentInset,
   onNamePerson,
+  onEnrollOwner,
 }: {
   tab: TabKey;
   contentInset: number;
   onNamePerson(person: PersonRecord): void;
+  onEnrollOwner(): void;
 }) {
-  if (tab === 'people') return <PeopleScreen contentInset={contentInset} />;
+  if (tab === 'people') return <PeopleScreen contentInset={contentInset} onEnrollOwner={onEnrollOwner} />;
   if (tab === 'loops') return <LoopsScreen contentInset={contentInset} />;
   return <HomeScreen contentInset={contentInset} onNamePerson={onNamePerson} />;
 }
