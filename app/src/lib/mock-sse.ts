@@ -61,10 +61,24 @@ export const mockScript: ScriptedEvent[] = [
     },
   },
   {
+    atMs: 4750,
+    event: {
+      type: 'amelia_step', request_id: 'context-f-maya-move-3', step: 'reason',
+      message: 'Current value will drive actions; the previous value stays in history',
+    },
+  },
+  {
+    atMs: 4950,
+    event: {
+      type: 'amelia_step', request_id: 'context-f-maya-move-3', step: 'act',
+      message: 'Flagged 1 related open loop for review',
+    },
+  },
+  {
     atMs: 5100,
     event: {
       type: 'amelia_audio', request_id: 'context-f-maya-move-3',
-      text: 'That changed: Maya is moving to Oakland on September 20.',
+      text: 'That changed: Maya is moving to Oakland on September 20. I found 1 related open loop worth reviewing.',
     },
   },
   {

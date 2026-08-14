@@ -172,7 +172,14 @@ export async function runTool(
 
       case 'draft_email': {
         const draft = await draftEmail(memory, input.to_person_id, input.subject, input.body);
-        return { result: draft, message: `Draft ready — "${draft.subject}"` };
+        // The address comes from memory only — never invented. When there is no
+        // email fact on file, say so plainly so the owner knows to save one before
+        // the draft can actually go out, instead of discovering a blank recipient
+        // in the app.
+        const message = draft.to_email
+          ? `Draft ready — "${draft.subject}"`
+          : `Draft ready — "${draft.subject}" — but I don't have ${draft.to_name ?? 'them'}'s email address saved. Say it or add it in the app, then tap send.`;
+        return { result: draft, message };
       }
 
       case 'create_reminder': {

@@ -105,7 +105,7 @@ export function voiceprintSearchPipeline(
 }
 
 /** Atlas cosine scores are normalized to [0, 1]; contracts use raw cosine. */
-function rawCosine(atlasScore: number): number {
+export function rawCosine(atlasScore: number): number {
   const raw = Math.max(-1, Math.min(1, atlasScore * 2 - 1));
   return Math.round(raw * 1e12) / 1e12;
 }

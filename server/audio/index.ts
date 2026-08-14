@@ -33,6 +33,8 @@ import { createIdentityService, type IdentityService } from '../identity'
 import { embedPcm } from './embed-client'
 import { FixtureProvider } from './fixture-provider'
 import { OpenAIRealtimeProvider } from './openai-realtime-provider'
+import { OpenRouterProvider } from './openrouter-provider'
+import { PyannoteProvider } from './pyannote-provider'
 import { AudioSession } from './session'
 import { SAMPLE_RATE, type StreamProvider } from './types'
 
@@ -88,7 +90,23 @@ async function fixtureProvider(): Promise<StreamProvider> {
   return new FixtureProvider(fixture.utterances)
 }
 
+/**
+ * Provider precedence is explicit, not key-sniffing: AUDIO_PROVIDER picks the
+ * spine. `pyannote` uses true diarization + per-segment transcription for orgs
+ * without the OpenAI diarize entitlement; `openrouter` is the one-speaker-per-
+ * turn batch fallback; default is OpenAI Realtime.
+ */
 export function liveProvider(env: Record<string, string | undefined> = process.env): StreamProvider {
+  const choice = env.AUDIO_PROVIDER ?? 'openai'
+  if (choice === 'pyannote') {
+    return new PyannoteProvider({
+      pyannoteApiKey: env.PYANNOTE_API_KEY ?? '',
+      openrouterApiKey: env.OPENROUTER_API_KEY ?? '',
+    })
+  }
+  if (choice === 'openrouter') {
+    return new OpenRouterProvider({ apiKey: env.OPENROUTER_API_KEY ?? '' })
+  }
   return new OpenAIRealtimeProvider({
     apiKey: env.OPENAI_API_KEY ?? '',
     url: env.OPENAI_REALTIME_URL,

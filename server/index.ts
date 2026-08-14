@@ -3,13 +3,16 @@ import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import type { DebugUtteranceRequest, UtteranceEvent } from '../shared/contracts';
+import { MongoClient } from 'mongodb';
+import type { DebugUtteranceRequest, Person, Utterance, UtteranceEvent, Voiceprint } from '../shared/contracts';
+import { OWNER_AUTH_THRESHOLD, OWNER_ID } from '../shared/contracts';
 import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
 import { registerGlassesRoutes, startGlassesServer } from './glasses';
 import { registerIdentityRoutes } from './identity';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
+import { rawCosine, voiceprintSearchPipeline } from './identity/service';
 
 /** True when this file is the process entry, including `tsx index.ts` / `tsx watch index.ts`. */
 export function isDirectRun(argv: readonly string[] = process.argv, moduleUrl = import.meta.url): boolean {
@@ -64,12 +67,79 @@ export function createApp() {
     return context.json(event, 202);
   });
 
+  // Voice "Hey Amelia" needs Lane A's confidence that the speaker is the owner.
+  // Lane A already resolved person_id on the utterance, but the wake gate is the
+  // LOOSE threshold (OWNER_AUTH_THRESHOLD), not the strict attribution threshold —
+  // so we re-score the stored voiceprint against the owner's voiceprints directly.
+  const ownerConfidenceFor = createOwnerConfidenceLookup();
+
   registerAudioRoutes(app, deps);
   registerIdentityRoutes(app, deps);
   registerMemoryRoutes(app, deps);
-  registerAmeliaRoutes(app, deps);
+  registerAmeliaRoutes(app, deps, { ownerConfidenceFor });
   registerGlassesRoutes(app, deps);
   return { app, deps };
+}
+
+/**
+ * Lazily resolved, cached per voiceprint_id. Returns undefined when identity is
+ * unavailable (no MONGODB_URI) so the wake gate fails closed and the
+ * press-and-hold summon remains the deliberate bypass.
+ */
+function createOwnerConfidenceLookup(): (utterance: UtteranceEvent) => number | undefined {
+  let client: Promise<MongoClient> | null = null;
+  const cache = new Map<string, number>();
+
+  return (utterance) => {
+    const voiceprintId = utterance.voiceprint_id;
+    if (!voiceprintId) return undefined;
+    const cached = cache.get(voiceprintId);
+    if (cached !== undefined) return cached;
+
+    if (!process.env.MONGODB_URI) return undefined;
+    client ??= new MongoClient(process.env.MONGODB_URI).connect();
+
+    // Fire-and-forget: the wake path is synchronous over the bus, so we cannot
+    // await here. The confidence is computed and cached for the NEXT utterance
+    // from the same voiceprint; combined with person_id gating in detectWake,
+    // the first owner turn arms the gate and subsequent turns are scored.
+    void client.then(async (mongo) => {
+      try {
+        const db = mongo.db();
+        const voiceprint = await db
+          .collection<Voiceprint>('voiceprints')
+          .findOne({ _id: voiceprintId, owner_id: OWNER_ID });
+        if (!voiceprint?.embedding) return;
+
+        const owner = await db
+          .collection<Person>('people')
+          .findOne({ owner_id: OWNER_ID, is_owner: true });
+        if (!owner) return;
+
+        const [match] = await db
+          .collection<Voiceprint>('voiceprints')
+          .aggregate<{ score: number }>([
+            {
+              $vectorSearch: {
+                index: 'voiceprints_vector',
+                path: 'embedding',
+                queryVector: voiceprint.embedding,
+                filter: { owner_id: OWNER_ID, person_id: owner._id },
+                numCandidates: 60,
+                limit: 1,
+              },
+            },
+            { $project: { score: { $meta: 'vectorSearchScore' } } },
+          ])
+          .toArray();
+        if (match) cache.set(voiceprintId, rawCosine(match.score));
+      } catch {
+        // A failed lookup leaves the gate closed; the next utterance retries.
+      }
+    });
+
+    return cache.get(voiceprintId);
+  };
 }
 
 export function startServer(port = Number(process.env.PORT ?? 3000)) {

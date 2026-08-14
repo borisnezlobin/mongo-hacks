@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Pressable, SectionList, StyleSheet, TextInput, View } from 'react-native';
-import { CaretRightIcon, MagnifyingGlassIcon, UsersThreeIcon, XIcon } from 'phosphor-react-native';
+import { CaretRightIcon, MagnifyingGlassIcon, UsersThreeIcon, WaveformIcon, XIcon } from 'phosphor-react-native';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
 import { Chip, EmptyState } from '../components/ui';
@@ -10,12 +10,13 @@ import { displayName, isUnnamed, usePeople, useStore, type PersonRecord } from '
 
 interface PeopleScreenProps {
   contentInset: number;
+  onEnrollOwner?(): void;
 }
 
 /** Unnamed voices sort into their own group at the top — they are the ones needing action. */
 const UNNAMED_SECTION = 'Waiting for a name';
 
-export function PeopleScreen({ contentInset }: PeopleScreenProps) {
+export function PeopleScreen({ contentInset, onEnrollOwner }: PeopleScreenProps) {
   const people = usePeople();
   const { state } = useStore();
   const navigation = useNavigation();
@@ -60,7 +61,20 @@ export function PeopleScreen({ contentInset }: PeopleScreenProps) {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <AppText variant="title">People</AppText>
+        <View style={styles.titleRow}>
+          <AppText variant="title">People</AppText>
+          {onEnrollOwner ? (
+            <Pressable
+              onPress={onEnrollOwner}
+              hitSlop={8}
+              accessibilityLabel="Teach Amelia your voice"
+              style={({ pressed }) => [styles.enrollButton, pressed && styles.pressed]}
+            >
+              <WaveformIcon size={15} color={colors.accent} weight="bold" />
+              <AppText variant="caption" color={colors.accent}>Your voice</AppText>
+            </Pressable>
+          ) : null}
+        </View>
         <View style={styles.searchField}>
           <MagnifyingGlassIcon size={17} color={colors.inkFaint} />
           <TextInput
@@ -132,6 +146,16 @@ export function PeopleScreen({ contentInset }: PeopleScreenProps) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { paddingHorizontal: layout.screenPadding, gap: spacing.md, paddingBottom: spacing.md },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  enrollButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 7,
+    borderRadius: radii.pill,
+    backgroundColor: colors.accentSoft,
+  },
   searchField: {
     flexDirection: 'row',
     alignItems: 'center',

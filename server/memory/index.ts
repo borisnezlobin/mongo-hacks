@@ -10,6 +10,7 @@ import type {
 import type { AmeliaBus } from '../lib/bus';
 import { answerQuestion } from '../ask';
 import { searchMemory } from '../ask/retrieval';
+import { listContextChanges } from './changes';
 import { flushSlowPass, registerExtraction } from './extraction';
 import * as store from './store';
 
@@ -92,6 +93,11 @@ export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void 
     const query = context.req.query('q');
     if (!query) return context.json({ error: 'q is required' }, 400);
     return context.json(await searchMemory(query, context.req.query('person_id')));
+  });
+
+  app.get('/memory/changes', async (context) => {
+    const requested = Number(context.req.query('limit') ?? 10);
+    return context.json(await listContextChanges(Number.isFinite(requested) ? requested : 10));
   });
 
   app.get('/promises', async (context) => {

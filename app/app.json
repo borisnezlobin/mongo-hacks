@@ -8,19 +8,22 @@
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.amelia.context",
+      "bundleIdentifier": "com.imzihao.amelia",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Amelia listens to conversations you choose to remember."
+        "NSMicrophoneUsageDescription": "Amelia listens to conversations you choose to remember.",
+        "NSLocalNetworkUsageDescription": "Amelia connects to your computer on the local network to sync live conversations and memory.",
+        "NSBonjourServices": ["_expo._tcp"]
       }
     },
     "android": {
-      "package": "com.amelia.context",
+      "package": "com.imzihao.amelia",
       "permissions": [
         "RECORD_AUDIO",
         "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
+      "expo-dev-client",
       "expo-audio",
       "expo-image-picker",
       "expo-status-bar",
