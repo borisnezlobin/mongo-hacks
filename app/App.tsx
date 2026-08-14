@@ -40,7 +40,7 @@ import { PeopleScreen } from './src/screens/people';
 import { PersonScreen } from './src/screens/person';
 
 export default function App() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     Manrope_400Regular,
     Manrope_500Medium,
     Manrope_600SemiBold,
@@ -50,9 +50,18 @@ export default function App() {
     Newsreader_600SemiBold,
   });
 
-  if (!fontsLoaded) {
+  // Render on font FAILURE as well as success. useFonts reports errors in its
+  // second slot; ignoring it meant a font that never resolved left the splash
+  // view up forever — an unbranded #FAF9F9 rectangle with no error anywhere,
+  // indistinguishable from a hung app. That is exactly what a dev build over a
+  // Metro tunnel does when an asset request does not come back.
+  //
+  // Falling back to system type is a cosmetic loss. Blocking the entire app
+  // behind a webfont is a demo-ending one.
+  if (!fontsLoaded && !fontError) {
     return <View style={styles.splash}><StatusBar style="dark" /></View>;
   }
+  if (fontError) console.warn('[amelia] fonts failed, using system type:', fontError);
 
   return (
     <SafeAreaProvider>
