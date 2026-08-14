@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { Animated, Easing, Pressable, StyleSheet } from 'react-native';
-import { SparkleIcon, SpeakerHighIcon } from 'phosphor-react-native';
+import { ChatCircleIcon, SpeakerHighIcon } from 'phosphor-react-native';
 import { AppText } from './app-text';
 import { GlassSurface } from './ui';
 import { colors, spacing } from '../constants/theme';
@@ -64,7 +64,7 @@ export function AmeliaPill({ hidden, turn, bottomOffset, onPress, onLongPress }:
         >
           {speaking
             ? <SpeakerHighIcon size={18} color={colors.accent} weight="fill" />
-            : <SparkleIcon size={18} color={colors.accent} weight={turn ? 'fill' : 'regular'} />}
+            : <ChatCircleIcon size={18} color={colors.accent} weight={turn ? 'fill' : 'regular'} />}
           <AppText variant="bodyStrong" numberOfLines={1} style={styles.text} color={turn ? colors.ink : colors.inkMuted}>
             {latest}
           </AppText>
