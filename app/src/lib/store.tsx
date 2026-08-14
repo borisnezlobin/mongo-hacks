@@ -55,10 +55,27 @@ export interface AmeliaState {
   liveConversationId: Id | null;
   /** Conversation of the most recent turn. Not the same as "live": it does not mean recording. */
   lastUtteranceConversationId: Id | null;
+  /**
+   * Utterances whose speaker the server is still working out. Attribution needs
+   * a few seconds of pooled speech, which is a long time to leave a line
+   * reading "Unknown speaker" — that says we failed, when we have not finished.
+   */
+  attributing: Record<Id, true>;
+  /**
+   * Conversations the owner has titled by hand. Recording stop generates a
+   * title from the transcript, and it must never overwrite one someone typed.
+   */
+  renamedConversations: Record<Id, true>;
+  /**
+   * Profile pictures found on disk, by person id. Kept beside `people` because
+   * the server's person list is authoritative for everything except this, and
+   * folding it in on every upsert is what makes a picture survive a reload.
+   */
+  avatars: Record<Id, string>;
   unknownCardDismissed: boolean;
 }
 
-type Action =
+export type Action =
   | { kind: 'events'; events: AmeliaEvent[] }
   | { kind: 'name-person'; personId: Id; name: string; relationship?: string; isOwner?: boolean }
   | { kind: 'set-avatar'; personId: Id; uri: string }
@@ -69,7 +86,8 @@ type Action =
   | { kind: 'set-live-conversation'; conversationId: Id | null }
   | { kind: 'attribute-utterances'; utteranceIds: Id[]; personId: Id }
   | { kind: 'upsert-conversations'; conversations: Conversation[] }
-  | { kind: 'upsert-people'; people: Person[] };
+  | { kind: 'upsert-people'; people: Person[] }
+  | { kind: 'hydrate-avatars'; avatars: Record<Id, string> };
 
 const UNNAMED_PATTERN = /^(unknown|unnamed|speaker\b)/i;
 
@@ -83,6 +101,12 @@ export function displayName(person: PersonRecord | undefined, fallbackIndex = 0)
   if (!person) return 'Unknown speaker';
   if (!isUnnamed(person)) return person.name;
   return fallbackIndex > 0 ? `Unknown speaker ${fallbackIndex}` : 'Unknown speaker';
+}
+
+function omit<T>(record: Record<Id, T>, key: Id): Record<Id, T> {
+  if (!(key in record)) return record;
+  const { [key]: _, ...rest } = record;
+  return rest;
 }
 
 function byId<T extends { _id: Id }>(items: T[]): Record<Id, T> {
@@ -105,6 +129,9 @@ export function createInitialState(withSeed: boolean = MOCK_ENABLED): AmeliaStat
     amelia: null,
     liveConversationId: null,
     lastUtteranceConversationId: null,
+    attributing: {},
+    renamedConversations: {},
+    avatars: {},
     unknownCardDismissed: false,
   };
   if (!withSeed) return empty;
@@ -167,12 +194,42 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       return {
         ...state,
         utterances: { ...state.utterances, [utterance._id]: utterance },
+        // A revision that carries a person is the answer arriving; stop saying
+        // we are still working on it.
+        attributing: utterance.person_id ? omit(state.attributing, utterance._id) : state.attributing,
         conversations: {
           ...state.conversations,
           [conversation._id]: { ...conversation, participant_ids: participants },
         },
         lastUtteranceConversationId: event.conversation_id,
       };
+    }
+
+    case 'conversation': {
+      const conversation = ensureConversation(state, event.conversation_id, nowIso);
+      return {
+        ...state,
+        conversations: {
+          ...state.conversations,
+          [conversation._id]: {
+            ...conversation,
+            // A title the owner typed outranks one the model generated.
+            title: state.renamedConversations[conversation._id] ? conversation.title : event.title ?? conversation.title,
+            ended_at: event.ended_at ?? conversation.ended_at,
+          },
+        },
+      };
+    }
+
+    case 'speaker_pending': {
+      const attributing = { ...state.attributing };
+      for (const utteranceId of event.utterance_ids) {
+        // An utterance that already has a person is settled; a late pending
+        // event for it must not drag it back into limbo.
+        if (state.utterances[utteranceId]?.person_id) continue;
+        attributing[utteranceId] = true;
+      }
+      return { ...state, attributing };
     }
 
     case 'identity': {
@@ -190,7 +247,9 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
         updated_at: nowIso,
       };
       const utterances = { ...state.utterances };
+      const attributing = { ...state.attributing };
       for (const utteranceId of event.utterance_ids) {
+        delete attributing[utteranceId];
         const utterance = utterances[utteranceId];
         if (!utterance) continue;
         utterances[utteranceId] = {
@@ -205,6 +264,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
         ...state,
         people: { ...state.people, [person._id]: person },
         utterances,
+        attributing,
         conversations: {
           ...state.conversations,
           [conversation._id]: {
@@ -304,7 +364,8 @@ export function applyEvents(state: AmeliaState, events: AmeliaEvent[]): AmeliaSt
   return events.reduce(applyEvent, state);
 }
 
-function reducer(state: AmeliaState, action: Action): AmeliaState {
+/** Exported for tests: the pure state transition, without the provider. */
+export function reduce(state: AmeliaState, action: Action): AmeliaState {
   switch (action.kind) {
     case 'events':
       return action.events.reduce(applyEvent, state);
@@ -334,6 +395,7 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
       if (!existing) return state;
       return {
         ...state,
+        avatars: { ...state.avatars, [action.personId]: action.uri },
         people: { ...state.people, [action.personId]: { ...existing, avatar_uri: action.uri } },
       };
     }
@@ -349,12 +411,17 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
     case 'rename-conversation': {
       const existing = state.conversations[action.conversationId];
       if (!existing) return state;
+      const title = action.title.trim();
       return {
         ...state,
         conversations: {
           ...state.conversations,
-          [action.conversationId]: { ...existing, title: action.title.trim() || existing.title },
+          [action.conversationId]: { ...existing, title: title || existing.title },
         },
+        // Remember it was hand-titled so the model's generated name cannot land on top.
+        renamedConversations: title
+          ? { ...state.renamedConversations, [action.conversationId]: true as const }
+          : state.renamedConversations,
       };
     }
 
@@ -398,9 +465,15 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
       const conversations = { ...state.conversations };
       for (const incoming of action.conversations) {
         const existing = conversations[incoming._id];
+        // Only a title the owner typed outranks the server's. The local one is
+        // usually just "Conversation, 12:16 PM", synthesised the moment the
+        // first turn arrived — and preferring it unconditionally meant the
+        // generated title could never appear, however well it was generated.
+        const ownerTitled = state.renamedConversations[incoming._id];
         conversations[incoming._id] = {
           ...incoming,
-          title: existing?.title ?? incoming.title ?? titleFor(incoming.started_at),
+          title: (ownerTitled ? existing?.title : incoming.title ?? existing?.title)
+            ?? titleFor(incoming.started_at),
           participant_ids: existing?.participant_ids?.length
             ? existing.participant_ids
             : incoming.participant_ids ?? [],
@@ -422,11 +495,22 @@ function reducer(state: AmeliaState, action: Action): AmeliaState {
           ...existing,
           ...incoming,
           name: existing && !isUnnamed(existing) ? existing.name : incoming.name,
-          avatar_uri: existing?.avatar_uri,
+          // Fall through to disk: on a cold start there is no existing record,
+          // which is exactly when a hydrated avatar has to win.
+          avatar_uri: existing?.avatar_uri ?? state.avatars[incoming._id],
           voiceprint_id: existing?.voiceprint_id,
         } as PersonRecord;
       }
       return { ...state, people };
+    }
+
+    case 'hydrate-avatars': {
+      const people = { ...state.people };
+      for (const [personId, uri] of Object.entries(action.avatars)) {
+        const existing = people[personId];
+        if (existing) people[personId] = { ...existing, avatar_uri: uri };
+      }
+      return { ...state, avatars: action.avatars, people };
     }
 
     case 'dismiss-unknown-card':
@@ -445,6 +529,7 @@ interface StoreValue {
   ingest(event: AmeliaEvent): void;
   namePerson(personId: Id, name: string, relationship?: string, isOwner?: boolean): void;
   setAvatar(personId: Id, uri: string): void;
+  hydrateAvatars(avatars: Record<Id, string>): void;
   closePromise(promiseId: Id): void;
   reopenPromise(promiseId: Id): void;
   renameConversation(conversationId: Id, title: string): void;
@@ -458,7 +543,7 @@ interface StoreValue {
 const StoreContext = createContext<StoreValue | null>(null);
 
 export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
+  const [state, dispatch] = useReducer(reduce, undefined, createInitialState);
   const queue = useRef<AmeliaEvent[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -490,6 +575,7 @@ export function AmeliaStoreProvider({ children }: { children: ReactNode }) {
     namePerson: (personId: Id, name: string, relationship?: string, isOwner?: boolean) =>
       dispatch({ kind: 'name-person' as const, personId, name, relationship, isOwner }),
     setAvatar: (personId: Id, uri: string) => dispatch({ kind: 'set-avatar' as const, personId, uri }),
+    hydrateAvatars: (avatars: Record<Id, string>) => dispatch({ kind: 'hydrate-avatars' as const, avatars }),
     closePromise: (promiseId: Id) => dispatch({ kind: 'close-promise' as const, promiseId }),
     reopenPromise: (promiseId: Id) => dispatch({ kind: 'reopen-promise' as const, promiseId }),
     renameConversation: (conversationId: Id, title: string) =>
@@ -564,6 +650,12 @@ export function useConversationUtterances(conversationId: Id | undefined): Utter
       .filter((utterance) => utterance.conversation_id === conversationId)
       .sort((a, b) => a.start_ms - b.start_ms);
   }, [state.utterances, conversationId]);
+}
+
+/** Whether the server is still working out who said this. */
+export function useIsAttributing(utteranceId: Id): boolean {
+  const { state } = useStore();
+  return state.attributing[utteranceId] === true;
 }
 
 export function useConversations(): Conversation[] {

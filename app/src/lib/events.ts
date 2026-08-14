@@ -6,6 +6,8 @@ import { startMockStream, type MockStreamOptions } from './mock-sse';
 const EVENT_NAMES: BusEventName[] = [
   'utterance',
   'identity',
+  'speaker_pending',
+  'conversation',
   'fact',
   'promise',
   'amelia_step',
