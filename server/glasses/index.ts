@@ -13,6 +13,7 @@
  * than mounted into it — two frameworks, and the SDK owns its own lifecycle.
  */
 
+import { request as httpRequest } from 'node:http';
 import type { Hono } from 'hono';
 // TYPE-ONLY: erased at compile time. @mentra/sdk declares a `development`
 // export condition pointing at ./src, which is not shipped, so any VALUE
@@ -147,6 +148,66 @@ export async function startGlassesServer(deps: ServerDependencies): Promise<bool
   }
 
   const instance = new AmeliaGlassesServer({ packageName, apiKey, port });
+
+  // ---- /api proxy → Amelia's Hono server ----------------------------------
+  // A free ngrok account gets exactly ONE public URL, and the MentraOS webhook
+  // has to own it. Without this, nothing off-network can reach Amelia's API:
+  // venue Wi-Fi isolates clients so the phone cannot see the host, and an
+  // iPhone hotspot blocks Atlas (the resolver cannot answer the SRV lookup
+  // mongodb+srv:// needs, and the carrier drops TCP 27017). Re-using the one
+  // tunnel for both is what breaks that deadlock.
+  //
+  // Hand-rolled rather than http-proxy-middleware: SSE is the whole point and
+  // the usual proxies buffer it. Piping raw keeps /events streaming.
+  instance.getExpressApp().use('/api', (request: any, response: any) => {
+    const upstreamPort = Number(process.env.PORT ?? 3000);
+
+    // The SDK mounts a JSON body parser globally, so by the time this runs the
+    // request stream is already drained. Piping it forwards zero bytes while
+    // content-length still promises some, and Hono kills the socket ("socket
+    // hang up"). Re-serialise the parsed body instead.
+    const hasBody = !['GET', 'HEAD'].includes(request.method);
+    const body =
+      hasBody && request.body && Object.keys(request.body).length > 0
+        ? Buffer.from(JSON.stringify(request.body))
+        : null;
+
+    const headers: Record<string, string> = {};
+    for (const [key, value] of Object.entries(request.headers)) {
+      // Hop-by-hop and length headers must not survive: the first breaks
+      // keep-alive negotiation, the second would describe the ORIGINAL body.
+      if (['host', 'connection', 'content-length', 'transfer-encoding'].includes(key)) continue;
+      if (typeof value === 'string') headers[key] = value;
+    }
+    headers.host = `127.0.0.1:${upstreamPort}`;
+    if (body) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = String(body.byteLength);
+    }
+
+    const proxied = httpRequest(
+      { host: '127.0.0.1', port: upstreamPort, path: request.url, method: request.method, headers },
+      (upstream) => {
+        response.writeHead(upstream.statusCode ?? 502, upstream.headers);
+        // flushHeaders so an SSE client gets the response head immediately
+        // instead of waiting for a buffer to fill.
+        response.flushHeaders?.();
+        upstream.pipe(response);
+      },
+    );
+    proxied.on('error', (error: Error) => {
+      console.error('[glasses] /api proxy error:', error.message);
+      if (!response.headersSent) response.status(502).json({ error: error.message });
+      else response.end();
+    });
+    // Client hung up mid-stream (SSE reconnects constantly): tear the upstream
+    // socket down too, or every phone refresh leaks a subscriber on the bus.
+    request.on('close', () => proxied.destroy());
+
+    if (body) proxied.end(body);
+    else proxied.end();
+  });
+
   await instance.start();
   server = instance;
   console.log(`[glasses] MentraOS app server on :${port} (webhook: /webhook)`);
