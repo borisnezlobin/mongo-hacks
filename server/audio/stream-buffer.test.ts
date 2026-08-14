@@ -4,6 +4,52 @@ import { SAMPLE_RATE } from './types'
 
 const buffer = () => new StreamBuffer('c1')
 
+describe('word revision', () => {
+  /**
+   * The live-transcript corruption: partials re-time their words, so keying on
+   * start_ms alone stacked each revision on the last instead of replacing it.
+   */
+  it('replaces a turn wholesale instead of interleaving its revisions', () => {
+    const b = buffer()
+    b.addSegments([{ speaker: 'turn-0', start_ms: 0, end_ms: 1000 }])
+
+    b.addWords([{ text: 'how', start_ms: 0, end_ms: 500, turn: 'turn-0' }])
+    b.addWords([
+      { text: 'how', start_ms: 0, end_ms: 300, turn: 'turn-0' },
+      { text: 'are', start_ms: 300, end_ms: 600, turn: 'turn-0' },
+    ])
+    b.addWords([
+      { text: 'how', start_ms: 0, end_ms: 250, turn: 'turn-0' },
+      { text: 'are', start_ms: 250, end_ms: 500, turn: 'turn-0' },
+      { text: 'you', start_ms: 500, end_ms: 900, turn: 'turn-0' },
+    ])
+
+    expect(b.utterances()[0].text).toBe('how are you')
+  })
+
+  it('keeps turns independent when one is revised', () => {
+    const b = buffer()
+    b.addSegments([
+      { speaker: 'turn-0', start_ms: 0, end_ms: 1000 },
+      { speaker: 'turn-1', start_ms: 1000, end_ms: 2000 },
+    ])
+    b.addWords([{ text: 'hello', start_ms: 0, end_ms: 900, turn: 'turn-0' }])
+    b.addWords([{ text: 'there', start_ms: 1000, end_ms: 1900, turn: 'turn-1' }])
+    b.addWords([{ text: 'hi', start_ms: 0, end_ms: 900, turn: 'turn-0' }])
+
+    expect(b.utterances().map((u) => u.text)).toEqual(['hi', 'there'])
+  })
+
+  it('still keys untagged words by start time, for providers that send no turn', () => {
+    const b = buffer()
+    b.addSegments([{ speaker: 'S0', start_ms: 0, end_ms: 1000 }])
+    b.addWords([{ text: 'draft', start_ms: 0, end_ms: 500 }])
+    b.addWords([{ text: 'final', start_ms: 0, end_ms: 500 }])
+
+    expect(b.utterances()[0].text).toBe('final')
+  })
+})
+
 describe('clock', () => {
   it('advances only with samples', () => {
     const b = buffer()

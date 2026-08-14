@@ -23,6 +23,14 @@ export class StreamBuffer {
   private words: Word[] = []
   private chunks: Float32Array[] = []
 
+  /**
+   * Provider turn label -> speaker cluster id. Without a diarising model the
+   * provider hands us a fresh label per VAD turn, which is useless for
+   * attribution on its own; the clusterer decides which turns are the same
+   * person and records it here. Every per-speaker view below reads through it.
+   */
+  private readonly aliases = new Map<string, string>()
+
   constructor(readonly conversationId: string) {}
 
   // Clock
@@ -53,14 +61,57 @@ export class StreamBuffer {
     this.segments.sort((a, b) => a.start_ms - b.start_ms)
   }
 
-  /** Words are keyed by start time; a re-emitted word replaces the old text. */
+  /**
+   * Words carrying a turn label replace that turn's previous words wholesale;
+   * the rest are keyed by start time, where a re-emitted word replaces the old
+   * text. The wholesale path exists because a streaming revision re-times every
+   * word it re-sends, so matching them up individually is not possible — see
+   * the note on `Word.turn`.
+   */
   addWords(incoming: Word[]): void {
+    const revisedTurns = new Set(incoming.map((word) => word.turn).filter(Boolean))
+    if (revisedTurns.size > 0) {
+      this.words = this.words.filter((word) => !word.turn || !revisedTurns.has(word.turn))
+    }
     for (const word of incoming) {
-      const at = this.words.findIndex((w) => w.start_ms === word.start_ms)
+      const at = word.turn ? -1 : this.words.findIndex((w) => w.start_ms === word.start_ms)
       if (at >= 0) this.words[at] = { ...word }
       else this.words.push({ ...word })
     }
     this.words.sort((a, b) => a.start_ms - b.start_ms)
+  }
+
+  // Clustering
+
+  /**
+   * Record that a provider turn belongs to a speaker cluster. Re-aliasing an
+   * already-aliased turn is allowed and is how a correction propagates: every
+   * derived view is recomputed from scratch, so the next `utterances()` call
+   * simply tells a different story.
+   */
+  setSpeakerAlias(providerLabel: string, clusterId: string): void {
+    this.aliases.set(providerLabel, clusterId)
+  }
+
+  /** Provider turns not yet assigned to a cluster, oldest first. */
+  unaliasedTurns(): Segment[] {
+    const seen = new Set<string>()
+    return this.segments
+      .filter((s) => {
+        if (this.aliases.has(s.speaker) || seen.has(s.speaker)) return false
+        seen.add(s.speaker)
+        return true
+      })
+      .map((s) => ({ ...s }))
+  }
+
+  /** Contiguous PCM for one provider turn, for the clusterer to embed. */
+  audioForTurn(providerLabel: string): Float32Array {
+    return this.concatSegments(this.segments.filter((s) => s.speaker === providerLabel))
+  }
+
+  private resolve(providerLabel: string): string {
+    return this.aliases.get(providerLabel) ?? providerLabel
   }
 
   // Join
@@ -73,7 +124,7 @@ export class StreamBuffer {
   speakerFor(word: Word): string {
     const midpoint = (word.start_ms + word.end_ms) / 2
     const containing = this.segments.find((s) => midpoint >= s.start_ms && midpoint < s.end_ms)
-    return containing?.speaker ?? UNKNOWN_SPEAKER
+    return containing ? this.resolve(containing.speaker) : UNKNOWN_SPEAKER
   }
 
   /**
@@ -112,16 +163,21 @@ export class StreamBuffer {
 
   // Per-speaker audio, for voiceprint embedding
 
-  /** Total speech attributed to one session speaker. */
+  /**
+   * Total speech attributed to one session speaker. Reads through aliases, so
+   * a cluster's total is every turn it has absorbed — which is the entire point:
+   * eight one-second turns clear a three-second floor together that none of
+   * them could clear alone.
+   */
   speechMsFor(sessionSpeaker: string): number {
     return this.segments
-      .filter((s) => s.speaker === sessionSpeaker)
+      .filter((s) => this.resolve(s.speaker) === sessionSpeaker)
       .reduce((total, s) => total + (s.end_ms - s.start_ms), 0)
   }
 
   /** Session speakers with at least minMs of attributed speech. */
   speakersOverFloor(minMs: number): string[] {
-    const seen = new Set(this.segments.map((s) => s.speaker))
+    const seen = new Set(this.segments.map((s) => this.resolve(s.speaker)))
     return [...seen].filter((speaker) => this.speechMsFor(speaker) >= minMs)
   }
 
@@ -130,9 +186,12 @@ export class StreamBuffer {
    * stream by segment boundaries. This is what gets embedded.
    */
   audioFor(sessionSpeaker: string): Float32Array {
+    return this.concatSegments(this.segments.filter((s) => this.resolve(s.speaker) === sessionSpeaker))
+  }
+
+  private concatSegments(segments: Segment[]): Float32Array {
     const stream = this.contiguousAudio()
-    const pieces = this.segments
-      .filter((s) => s.speaker === sessionSpeaker)
+    const pieces = segments
       .map((s) => {
         const from = Math.max(0, Math.floor((s.start_ms / 1000) * SAMPLE_RATE))
         const to = Math.min(stream.length, Math.ceil((s.end_ms / 1000) * SAMPLE_RATE))
