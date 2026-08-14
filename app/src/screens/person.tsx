@@ -16,6 +16,7 @@ import { Avatar } from '../components/avatar';
 import { Card, Chip, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { attributeLabel, formatDay, formatDue } from '../lib/format';
+import { saveAvatar } from '../lib/avatars';
 import { useNavigation } from '../lib/navigation';
 import {
   displayName,
@@ -65,7 +66,10 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
       aspect: [1, 1],
       quality: 0.8,
     });
-    if (!result.canceled && result.assets[0]) setAvatar(personId, result.assets[0].uri);
+    if (result.canceled || !result.assets[0]) return;
+    // The picker's URI points into the cache, which is both wiped on reload and
+    // eligible for eviction. Copy it somewhere permanent first.
+    setAvatar(personId, saveAvatar(personId, result.assets[0].uri));
   };
 
   if (!person) {
