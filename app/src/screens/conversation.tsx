@@ -1,20 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
+import { Alert, Clipboard, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import {
-  ActionSheetIOS,
-  Alert,
-  Clipboard,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  TextInput,
-  View,
-} from 'react-native';
-import { CaretLeftIcon, CheckIcon, PencilSimpleIcon } from 'phosphor-react-native';
-import type { Id } from '../../../shared/contracts';
+  CaretLeftIcon,
+  CheckIcon,
+  CopyIcon,
+  PencilSimpleIcon,
+  TrashIcon,
+  UserSwitchIcon,
+} from 'phosphor-react-native';
+import type { Id, Utterance } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
 import { AmeliaMessage } from '../components/amelia-message';
 import { Chip } from '../components/ui';
+import { MessageMenu, type Anchor, type MenuAction } from '../components/message-menu';
 import { UtteranceRow } from '../components/utterance-row';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { api } from '../lib/api';
@@ -35,7 +33,7 @@ interface ConversationScreenProps {
 }
 
 export function ConversationScreen({ conversationId, onNamePerson, contentInset }: ConversationScreenProps) {
-  const { state, renameConversation, ingest, upsertConversations } = useStore();
+  const { state, renameConversation, ingest, upsertConversations, deleteConversation } = useStore();
   const navigation = useNavigation();
   const utterances = useConversationUtterances(conversationId);
   const conversation = state.conversations[conversationId];
@@ -48,6 +46,9 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     .filter((u, i, all) => i === 0 || all[i - 1].text.trim() !== u.text.trim());
   const scrollRef = useRef<ScrollView>(null);
 
+  const [menu, setMenu] = useState<
+    { anchor: Anchor; speaker: string; text: string; actions: MenuAction[] } | null
+  >(null);
   const [editingTitle, setEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState(conversation?.title ?? '');
 
@@ -122,46 +123,64 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
   };
 
   /**
-   * Long-press a turn for the things you actually want from a transcript:
-   * its text, or the speaker's name when Amelia got it wrong.
+   * Long-press a turn. The menu opens against the message itself rather than
+   * as a detached sheet, so there is no doubt which turn is about to change.
    *
    * Clipboard comes from react-native core, which warns that it is deprecated.
    * expo-clipboard is the successor but is a native module, and adding one
-   * means rebuilding the dev client — not worth blocking on. Swap it at the
-   * next native rebuild.
+   * means rebuilding the dev client. Swap it at the next native rebuild.
    */
-  const onUtteranceMenu = (utterance: { _id: Id; text: string; start_ms: number }, person?: PersonRecord) => {
+  const openMenu = (utterance: Utterance, person: PersonRecord | undefined, anchor: Anchor) => {
     const speaker = person ? person.name : 'Unknown speaker';
-    const withSpeaker = `${speaker}: ${utterance.text}`;
-    const actions: { label: string; run(): void }[] = [
-      { label: 'Copy text', run: () => Clipboard.setString(utterance.text) },
-      { label: 'Copy with speaker', run: () => Clipboard.setString(withSpeaker) },
-      {
-        label: person ? 'Change speaker' : 'Name this speaker',
-        run: () => onNamePerson(
-          person ?? {
-            _id: utterance._id,
-            owner_id: conversation?.owner_id ?? OWNER_PERSON_ID,
-            name: '',
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          [utterance._id],
-        ),
-      },
-    ];
+    setMenu({
+      anchor,
+      speaker,
+      text: utterance.text,
+      actions: [
+        { label: 'Copy text', icon: CopyIcon, run: () => Clipboard.setString(utterance.text) },
+        {
+          label: 'Copy with speaker',
+          icon: CopyIcon,
+          run: () => Clipboard.setString(`${speaker}: ${utterance.text}`),
+        },
+        {
+          label: person ? 'Change speaker' : 'Name this speaker',
+          icon: UserSwitchIcon,
+          run: () => onNamePerson(
+            person ?? {
+              _id: utterance._id,
+              owner_id: conversation?.owner_id ?? OWNER_PERSON_ID,
+              name: '',
+              created_at: utterance.created_at,
+              updated_at: utterance.updated_at,
+            },
+            [utterance._id],
+          ),
+        },
+      ],
+    });
+  };
 
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length },
-        (index) => actions[index]?.run(),
-      );
-      return;
-    }
-    Alert.alert(speaker, utterance.text, [
-      ...actions.map((a) => ({ text: a.label, onPress: a.run })),
-      { text: 'Cancel', style: 'cancel' as const },
-    ]);
+  const confirmDelete = () => {
+    Alert.alert(
+      'Delete this conversation?',
+      // Say what actually goes. Facts and promises cite a turn in this
+      // transcript, so keeping them would leave memory asserting things it
+      // cannot show you the evidence for.
+      'The transcript and anything Amelia remembered from it are removed. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            navigation.back();
+            deleteConversation(conversationId);
+            await api.deleteConversation(conversationId).catch(() => {});
+          },
+        },
+      ],
+    );
   };
 
   // A live conversation has no record until the first utterance arrives, so an empty id is
@@ -212,6 +231,10 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
         <View style={styles.metaRow}>
           <AppText variant="caption">{formatDay(conversation.started_at)}</AppText>
           {isLive ? <Chip label="Listening now" tone="live" /> : null}
+          <View style={styles.metaSpacer} />
+          <Pressable onPress={confirmDelete} hitSlop={10} accessibilityLabel="Delete conversation">
+            <TrashIcon size={17} color={colors.inkFaint} />
+          </Pressable>
         </View>
       </View>
 
@@ -245,7 +268,7 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
               person={person}
               showHeader={showHeader}
               attributing={state.attributing[utterance._id] === true}
-              onLongPress={() => onUtteranceMenu(utterance, person)}
+              onLongPress={(anchor) => openMenu(utterance, person, anchor)}
               onPressPerson={() => person && navigation.openPerson(person._id)}
               // Unattributed turns still need a way in, so synthesise a person record from
               // the voiceprint. Without this the speaker Amelia has not resolved yet — often
@@ -273,6 +296,14 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
           </AppText>
         ) : null}
       </ScrollView>
+
+      <MessageMenu
+        anchor={menu?.anchor ?? null}
+        speaker={menu?.speaker ?? ''}
+        text={menu?.text ?? ''}
+        actions={menu?.actions ?? []}
+        onDismiss={() => setMenu(null)}
+      />
     </View>
   );
 }
@@ -310,6 +341,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     height: 46,
   },
+  metaSpacer: { flex: 1 },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   scroll: { paddingHorizontal: layout.screenPadding, paddingTop: spacing.xs },
   waiting: { paddingTop: spacing.xl },
