@@ -2,11 +2,19 @@
 
 ## Startup protocol
 
-You are working on Amelia, a time-boxed MongoDB hackathon project with parallel lane ownership. Read `AGENTS.md`, `shared/contracts.ts`, and `PROGRESS.txt` before acting. Then inspect the current branch and dirty worktree. Existing changes belong to teammates; preserve them.
+You are working on Amelia alongside four other people and their agents, all on the `main` branch, mostly at different hours. Run `bun run sync` first — it reports what landed on main, flags incoming changes that collide with the uncommitted work in this worktree, and prints the board. Then read `WORKSTREAMS.md`, `.team/README.md`, `shared/contracts.ts`, and `PROGRESS.txt`.
 
-State which lane you are operating in and list its owned paths before editing. If the requested work crosses ownership boundaries, stop and propose a contract-level handoff. Never silently modify frozen Lane 0 files or another lane's tree.
+No path is off limits and no file is frozen. The constraint is communication, not permission:
 
-Use Bun commands. Keep integrations behind the shared contracts and the typed event bus. Verify with focused tests, `bun run test`, and `bun run typecheck`. Do not describe planned code as implemented.
+- Before starting, check `.team/*.md` and `WORKSTREAMS.md` to confirm nobody is already doing this.
+- Existing uncommitted changes in the worktree belong to a teammate. Preserve them.
+- When changing a shared file — `shared/contracts.ts`, `server/index.ts`, `server/lib/bus.ts`, `app/src/lib/store.tsx`, `app/src/constants/theme.ts`, `db/indexes.json`, `package.json` — add a line to **Heads up** in the user's `.team` file, and prefer landing the contract change as its own commit first.
+- Commit and push in small increments rather than accumulating a large local diff.
+- Before finishing: update `.team/<user>.md`, run `bun run test` and `bun run typecheck`, then `git pull --rebase origin main` and push.
+
+`WORKSTREAMS.md` records who is driving what and known cross-stream dependencies. It is context, not a specification — do not treat its notes as requirements or as a reason to narrow what the user asked for.
+
+Use Bun commands. Keep integrations behind the shared contracts and the typed event bus. Do not describe planned code as implemented.
 
 ## Project summary
 
@@ -18,17 +26,21 @@ The system boundary is:
 
 MongoDB Atlas is the system of record and must be the organizer-provided Hackathon Sandbox. `shared/contracts.ts` is the anti-conflict artifact. The Lane 0 bus is the only shared runtime integration point.
 
-## Lane selection
+## Workstreams
 
-| Lane | Work only in |
+Current work is organised in `WORKSTREAMS.md` as five driver-led streams: authentication and users, better lookup, Amelia voice and profile tools, the Loops rework, and UI. A driver is the person carrying a stream end to end, not an owner of the files it happens to touch.
+
+Subsystem map, for orientation rather than permission:
+
+| Area | Lives in |
 |---|---|
-| A | `server/audio/`, `server/identity/`, `sidecar/`, `app/audio/` |
-| B | `server/memory/`, `server/ask/`, `db/` |
-| C | `app/` except `app/audio/` |
-| D | `server/amelia/`, `video/` |
-| E | `server/glasses/`, and only after the golden path |
+| Audio and identity | `server/audio/`, `server/identity/`, `sidecar/`, `app/audio/` |
+| Memory and retrieval | `server/memory/`, `server/ask/`, `db/` |
+| App | `app/` |
+| Amelia agent | `server/amelia/`, `video/` |
+| Glasses (stretch) | `server/glasses/` |
 
-Frozen Lane 0 files are enumerated in `AGENTS.md`. A request to work in one lane is not permission to complete another lane.
+Work that crosses two streams goes through `shared/contracts.ts` first: land the type, push it, then build against it from both sides.
 
 ## Architecture diagram system prompt
 

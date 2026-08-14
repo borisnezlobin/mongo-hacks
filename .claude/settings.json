@@ -1,0 +1,24 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node scripts/sync.mjs 2>&1 | sed 's/\\x1b\\[[0-9;]*m//g'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git fetch origin --quiet 2>/dev/null; AHEAD=$(git rev-list --count origin/main..HEAD 2>/dev/null || echo 0); BEHIND=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0); if [ \"$AHEAD\" != \"0\" ] || [ \"$BEHIND\" != \"0\" ]; then echo \"Sync check: $AHEAD unpushed commit(s), $BEHIND commit(s) waiting on main. Before finishing: update .team/<you>.md, run bun run test && bun run typecheck, then git pull --rebase origin main && git push origin main.\"; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

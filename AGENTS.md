@@ -8,13 +8,17 @@ The product claim is: Amelia remembers not only what was said, but who said it, 
 
 ## Read this first
 
+Five people and their agents work on the `main` branch, usually at different hours. Nothing is locked; the discipline is staying in sync.
+
 Before changing code:
 
-1. Read `shared/contracts.ts` completely.
-2. Read `PROGRESS.txt` and run `git status --short --branch`.
-3. Determine your lane and edit only its owned paths.
-4. Treat the frozen files and cross-lane surfaces below as APIs.
-5. Run the smallest relevant tests while working, then `bun run test` and `bun run typecheck` before handoff.
+1. Run `bun run sync`.
+2. Read `WORKSTREAMS.md` and `.team/README.md` — confirm nobody is already doing this.
+3. Read `shared/contracts.ts` completely.
+4. Read `PROGRESS.txt`.
+5. Run the smallest relevant tests while working, then `bun run test` and `bun run typecheck` before pushing.
+
+Before you stop: update `.team/<you>.md`, then `git pull --rebase origin main` and push. Push small and often.
 
 Do not infer that a component in the target architecture is already implemented. Verify it in the repository. Architecture diagrams must distinguish `implemented`, `scaffolded`, `planned`, and `stretch` components.
 
@@ -93,9 +97,9 @@ flowchart LR
 
 The event bus is the integration backbone. Audio, memory extraction, Amelia, and SSE consume the same finalized utterance events. Lanes do not import one another's internal modules.
 
-## Frozen integration contracts
+## Shared integration contracts
 
-These files were frozen by Lane 0 and must not be edited casually:
+These files are load-bearing and read by everyone. They are not frozen, but a change to one lands as its own small commit, gets pushed immediately, and gets a line in **Heads up** in your `.team` file:
 
 - `shared/contracts.ts`
 - `server/index.ts`
@@ -106,7 +110,7 @@ These files were frozen by Lane 0 and must not be edited casually:
 - `app/metro.config.js`
 - `tsconfig.json`
 
-If a frozen contract truly must change, announce it to the team, coordinate with the contracts owner, update every consumer, and run the full suite. Do not add a dependency from a lane branch without that coordination.
+Update every consumer in the same commit and run the full suite. New dependencies get announced before they land — an unexpected lockfile change is a painful rebase for four other people.
 
 The important fixed values are:
 
