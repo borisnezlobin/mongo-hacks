@@ -96,8 +96,9 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     };
 
     void pull();
-    if (!isLive) return () => { cancelled = true; };
-
+    // Poll whenever the screen is open, not only while this phone is recording. A replay
+    // driven from the server is someone else writing turns into this conversation, and
+    // without polling it those turns never arrive.
     const interval = setInterval(() => void pull(), TRANSCRIPT_POLL_MS);
     return () => {
       cancelled = true;
