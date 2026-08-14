@@ -56,7 +56,11 @@ export class OpenAIRealtimeProvider implements StreamProvider {
   private positionMs = 0
   private turnStartMs: number | null = null
   private turnIndex = 0
-  private readonly turnBounds = new Map<string, { start_ms: number; end_ms: number }>()
+  private readonly turnBounds = new Map<string, { start_ms: number; end_ms: number; label: string }>()
+  /** Text accumulated from deltas, per in-flight turn. */
+  private readonly partialText = new Map<string, string>()
+  /** Diagnostic only, behind DEBUG_REALTIME. */
+  private readonly eventCounts = new Map<string, number>()
   /** True once a diarising model has supplied real speaker labels. */
   private diarized = false
   /** End of the previous VAD turn, so consecutive turns never overlap. */
@@ -185,6 +189,14 @@ export class OpenAIRealtimeProvider implements StreamProvider {
   }
 
   private handleEvent(event: { type?: string }): void {
+    // Which events a transcription session actually sends varies by model, and
+    // guessing wrong is invisible — a dropped delta looks exactly like a slow
+    // transcript. DEBUG_REALTIME=1 shows what is really arriving.
+    if (process.env.DEBUG_REALTIME === '1' && event.type) {
+      const seen = (this.eventCounts.get(event.type) ?? 0) + 1
+      this.eventCounts.set(event.type, seen)
+      if (seen === 1) console.log(`[realtime] first ${event.type} at ${this.positionMs}ms`)
+    }
     if (event.type === 'error') {
       const detail = event as { error?: { message?: string } }
       throw new Error(detail.error?.message ?? 'OpenAI Realtime error')
@@ -216,8 +228,38 @@ export class OpenAIRealtimeProvider implements StreamProvider {
       const startMs = Math.max(started.audio_start_ms ?? this.positionMs, this.lastTurnEndMs)
       this.turnStartMs = startMs
       if (started.item_id) {
-        this.turnBounds.set(started.item_id, { start_ms: startMs, end_ms: startMs })
+        // The turn's label is claimed here rather than at completion, so the
+        // deltas that arrive while the person is still talking can be emitted
+        // under the same label the finished turn will use.
+        this.turnBounds.set(started.item_id, {
+          start_ms: startMs,
+          end_ms: startMs,
+          label: `turn-${this.turnIndex++}`,
+        })
       }
+      return
+    }
+
+    // Partial transcription. The whole point of a streaming model is that text
+    // exists before the sentence ends; waiting for `completed` threw that away
+    // and made every line appear a beat after it was said.
+    if (event.type === 'conversation.item.input_audio_transcription.delta') {
+      const delta = event as { item_id?: string; delta?: string }
+      if (this.diarized || !delta.item_id || !delta.delta) return
+      // Bounds are normally claimed by speech_started, but that event is not
+      // guaranteed to arrive first — and dropping the delta when it has not
+      // meant partial text never appeared at all, leaving the transcript as
+      // slow as it was before deltas were handled. Open the turn here instead.
+      const bounds = this.turnBounds.get(delta.item_id) ?? {
+        start_ms: Math.max(this.turnStartMs ?? this.positionMs, this.lastTurnEndMs),
+        end_ms: this.positionMs,
+        label: `turn-${this.turnIndex++}`,
+      }
+      this.turnBounds.set(delta.item_id, bounds)
+      const text = (this.partialText.get(delta.item_id) ?? '') + delta.delta
+      this.partialText.set(delta.item_id, text)
+      if (!text.trim()) return
+      this.emitTurn(bounds.label, bounds.start_ms, Math.max(this.positionMs, bounds.start_ms + 1), text.trim())
       return
     }
 
@@ -230,6 +272,7 @@ export class OpenAIRealtimeProvider implements StreamProvider {
         this.turnBounds.set(stopped.item_id, {
           start_ms: bounds?.start_ms ?? this.turnStartMs ?? 0,
           end_ms: endMs,
+          label: bounds?.label ?? `turn-${this.turnIndex++}`,
         })
       }
       this.turnStartMs = null
@@ -242,12 +285,18 @@ export class OpenAIRealtimeProvider implements StreamProvider {
         const bounds = (completed.item_id && this.turnBounds.get(completed.item_id)) || {
           start_ms: this.turnStartMs ?? 0,
           end_ms: this.positionMs,
+          label: `turn-${this.turnIndex++}`,
         }
-        if (completed.item_id) this.turnBounds.delete(completed.item_id)
-        // One label per turn. Voiceprint matching downstream decides who each
-        // turn belongs to; inventing a shared label here would merge speakers.
+        if (completed.item_id) {
+          this.turnBounds.delete(completed.item_id)
+          this.partialText.delete(completed.item_id)
+        }
+        // One label per turn, reused from the deltas so the finished text
+        // revises the partial rather than appearing beside it. Clustering
+        // downstream decides which turns are the same person; inventing a
+        // shared label here would merge speakers.
         this.emitTurn(
-          `turn-${this.turnIndex++}`,
+          bounds.label,
           bounds.start_ms,
           Math.max(bounds.end_ms, bounds.start_ms + 1),
           completed.transcript.trim(),
@@ -267,7 +316,7 @@ export class OpenAIRealtimeProvider implements StreamProvider {
   private emitTurn(speaker: string, startMs: number, endMs: number, text: string): void {
     const end = Math.max(endMs, startMs + 1)
     this.segmentHandler([{ speaker, start_ms: startMs, end_ms: end }])
-    this.wordHandler(spreadWords(text, startMs, end))
+    this.wordHandler(spreadWords(text, startMs, end, speaker))
   }
 }
 
@@ -295,13 +344,13 @@ function pcm16Base64(input: Float32Array): string {
   return bytes.toString('base64')
 }
 
-function spreadWords(text: string, startMs: number, endMs: number): Word[] {
+function spreadWords(text: string, startMs: number, endMs: number, turn?: string): Word[] {
   const words = text.trim().split(/\s+/).filter(Boolean)
   const total = words.reduce((sum, word) => sum + word.length, 0)
   let cursor = startMs
   return words.map((word) => {
     const width = total === 0 ? 0 : ((endMs - startMs) * word.length) / total
-    const timed = { text: word, start_ms: Math.round(cursor), end_ms: Math.round(cursor + width) }
+    const timed = { text: word, start_ms: Math.round(cursor), end_ms: Math.round(cursor + width), turn }
     cursor += width
     return timed
   })

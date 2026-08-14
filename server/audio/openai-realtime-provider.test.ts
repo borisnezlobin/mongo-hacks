@@ -71,6 +71,103 @@ describe('OpenAI Realtime provider', () => {
     ])
   })
 
+  /**
+   * Streaming models produce text before the sentence ends. Waiting for
+   * `completed` threw that away and made every line land a beat after it was
+   * said, which is most of what "the transcript feels slow" actually was.
+   */
+  it('emits partial text from deltas under the label the finished turn will reuse', () => {
+    const socket = new FakeSocket()
+    const provider = new OpenAIRealtimeProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o-transcribe',
+      socketFactory: () => socket,
+    })
+    const segments: { speaker: string }[] = []
+    const words: { text: string }[] = []
+    provider.onSegments((value) => segments.push(...value))
+    provider.onWords((value) => words.push(...value))
+
+    socket.emit('open')
+    provider.pushAudio(new Float32Array(1600).fill(0.25))
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'input_audio_buffer.speech_started',
+      item_id: 'item-1',
+      audio_start_ms: 0,
+    })))
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'conversation.item.input_audio_transcription.delta',
+      item_id: 'item-1',
+      delta: 'so I was',
+    })))
+
+    expect(words.map((w) => w.text)).toEqual(['so', 'I', 'was'])
+    const partialLabel = segments.at(-1)!.speaker
+
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'conversation.item.input_audio_transcription.completed',
+      item_id: 'item-1',
+      transcript: 'so I was thinking',
+    })))
+
+    // Same label, so the finished text revises the draft in place rather than
+    // arriving as a second turn from a second speaker.
+    expect(segments.at(-1)!.speaker).toBe(partialLabel)
+    expect(words.map((w) => w.text).slice(-4)).toEqual(['so', 'I', 'was', 'thinking'])
+  })
+
+  /**
+   * Regression: every revision of a turn re-times all of its words, so the
+   * buffer cannot match them up individually. Tagging each word with its turn
+   * is what lets the buffer replace the set. Without it a live transcript came
+   * out as "how are you how how doing? how are are I've how just you just".
+   */
+  it('tags every word with its turn so a revision replaces rather than stacks', () => {
+    const socket = new FakeSocket()
+    const provider = new OpenAIRealtimeProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o-transcribe',
+      socketFactory: () => socket,
+    })
+    const batches: { text: string; turn?: string }[][] = []
+    provider.onWords((value) => batches.push(value))
+
+    socket.emit('open')
+    provider.pushAudio(new Float32Array(1600).fill(0.25))
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'input_audio_buffer.speech_started', item_id: 'item-1', audio_start_ms: 0,
+    })))
+    for (const delta of ['how ', 'are ', 'you']) {
+      socket.emit('message', Buffer.from(JSON.stringify({
+        type: 'conversation.item.input_audio_transcription.delta', item_id: 'item-1', delta,
+      })))
+    }
+
+    const turns = new Set(batches.flat().map((w) => w.turn))
+    expect(turns.size).toBe(1)
+    expect([...turns][0]).toBeTruthy()
+  })
+
+  it('ignores deltas when the model supplies real diarisation', () => {
+    const socket = new FakeSocket()
+    const provider = new OpenAIRealtimeProvider({ apiKey: 'test-key', socketFactory: () => socket })
+    const words: unknown[] = []
+    provider.onWords((value) => words.push(...value))
+
+    socket.emit('open')
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'conversation.item.input_audio_transcription.segment',
+      speaker: 'speaker_1', text: 'hello', start: 0, end: 0.5,
+    })))
+    const afterDiarised = words.length
+    socket.emit('message', Buffer.from(JSON.stringify({
+      type: 'conversation.item.input_audio_transcription.delta',
+      item_id: 'item-1', delta: 'ignored',
+    })))
+
+    expect(words).toHaveLength(afterDiarised)
+  })
+
   it('linearly resamples 16 kHz input to 24 kHz', () => {
     expect(resampleLinear(new Float32Array(1600), 16_000, 24_000)).toHaveLength(2400)
   })
