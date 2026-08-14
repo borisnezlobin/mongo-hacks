@@ -156,8 +156,12 @@ function Shell() {
 
   const tabBarHeight = layout.tabBarHeight + Math.max(insets.bottom, spacing.sm);
   const recordingBarOffset = tabBarHeight + spacing.md;
-  const ameliaPillOffset = recordingBarOffset + 150;
-  const contentInset = ameliaPillOffset + 96;
+  const onTranscript = navigation.route.name === 'conversation';
+  // Under the mic on a transcript, above it elsewhere. The mic control is ~94pt tall now
+  // that its caption is gone.
+  const ameliaPillOffset = onTranscript ? tabBarHeight - 4 : recordingBarOffset + 110;
+  const recordingControlOffset = onTranscript ? recordingBarOffset + 56 : recordingBarOffset;
+  const contentInset = recordingBarOffset + 210;
 
   const showFloatingBars = navigation.route.name !== 'person';
 
@@ -248,7 +252,7 @@ function Shell() {
           />
           <RecordingBar
             uplink={uplink}
-            bottomOffset={recordingBarOffset}
+            bottomOffset={recordingControlOffset}
             onOpenLive={() => navigation.openConversation(liveConversationId)}
           />
         </>
