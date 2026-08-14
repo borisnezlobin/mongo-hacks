@@ -26,7 +26,7 @@ interface HomeScreenProps {
 }
 
 export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
-  const { state, dismissUnknownCard, ingest, upsertConversations } = useStore();
+  const { state, dismissUnknownCard, ingest, upsertConversations, upsertPeople } = useStore();
   const conversations = useConversations();
   const unknown = useUnknownPeople();
   const navigation = useNavigation();
@@ -64,6 +64,9 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
   // one's turns; utterances are keyed by id, so re-seeing them is a no-op.
   useEffect(() => {
     let cancelled = false;
+    // Without the people list, every attributed turn still renders as "Unknown speaker":
+    // the utterance has a person_id but nothing to resolve it against.
+    void api.listPeople().then((people) => { if (!cancelled) upsertPeople(people); }).catch(() => {});
     void api.listConversations()
       .then(async (conversations) => {
         if (cancelled) return;
@@ -91,7 +94,7 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         // No server yet: seeded and live data still render.
       });
     return () => { cancelled = true; };
-  }, [ingest, upsertConversations]);
+  }, [ingest, upsertConversations, upsertPeople]);
 
   useEffect(() => {
     let cancelled = false;
