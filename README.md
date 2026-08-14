@@ -6,6 +6,10 @@ Live captions preserve words. They lose who said them, what changed, and what st
 
 Amelia is built first for deaf and hard-of-hearing people navigating fast group conversations — the situation where losing track of *who* is speaking, or missing the one sentence that corrected an earlier one, has real consequences. It turns a conversation into a structured, queryable memory of the people in the room.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="Amelia capturing a live conversation, attributing each turn to a speaker, and naming an unrecognised voice" width="320">
+</p>
+
 ---
 
 ## What it does
