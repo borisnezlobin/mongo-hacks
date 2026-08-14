@@ -10,12 +10,10 @@ import {
 } from 'phosphor-react-native';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
-import { ContextChangeCard } from '../components/context-change-card';
 import { Card, Chip, EmptyState, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { api } from '../lib/api';
 import { useAsk } from '../lib/ask';
-import { deriveContextChanges, type ContextChange } from '../lib/context-changes';
 import { formatDay, formatDuration } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
 import { displayName, useConversations, useStore, useUnknownPeople, type PersonRecord } from '../lib/store';
@@ -32,14 +30,7 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
   const navigation = useNavigation();
   const { ask, clear, pending, result } = useAsk();
   const [query, setQuery] = useState('');
-  const [persistedChanges, setPersistedChanges] = useState<ContextChange[]>([]);
 
-  const liveChanges = useMemo(() => deriveContextChanges(state), [state]);
-  const changes = useMemo(() => {
-    const merged = new Map(persistedChanges.map((change) => [change.id, change]));
-    for (const change of liveChanges) merged.set(change.id, change);
-    return [...merged.values()].sort((a, b) => b.after.valid_from.localeCompare(a.after.valid_from));
-  }, [liveChanges, persistedChanges]);
 
   const openPromiseCount = useMemo(
     () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,
@@ -96,15 +87,6 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
     return () => { cancelled = true; };
   }, [ingest, upsertConversations, upsertPeople]);
 
-  useEffect(() => {
-    let cancelled = false;
-    void api.listContextChanges()
-      .then((records) => { if (!cancelled) setPersistedChanges(records); })
-      .catch(() => {
-        // The local append-only graph keeps the demo useful without the server.
-      });
-    return () => { cancelled = true; };
-  }, []);
 
   const submit = () => {
     ask(query);
@@ -128,22 +110,7 @@ export function HomeScreen({ onNamePerson, contentInset }: HomeScreenProps) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {changes.length > 0 ? (
-          <View style={styles.section}>
-            <SectionHeader title="What changed" />
-            {changes.slice(0, 3).map((change, index) => (
-              <ContextChangeCard
-                key={change.id}
-                change={change}
-                person={state.people[change.person_id]}
-                defaultExpanded={index === 0}
-                onOpenConversation={change.conversation_id
-                  ? () => navigation.openConversation(change.conversation_id!)
-                  : undefined}
-              />
-            ))}
-          </View>
-        ) : null}
+
 
         {result ? (
           <Card style={styles.answerCard}>
