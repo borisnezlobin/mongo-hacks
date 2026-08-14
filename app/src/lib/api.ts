@@ -42,6 +42,10 @@ export const api = {
   mergePeople: (personIds: Id[]) => post<Person>('/people/merge', { person_ids: personIds }),
   listConversations: () => request<Conversation[]>('/conversations'),
   getConversation: (id: Id) => request<ConversationSummary>(`/conversations/${id}`),
+  deleteConversation: (id: Id) =>
+    request<{ utterances: number; facts: number; promises: number }>(`/conversations/${id}`, {
+      method: 'DELETE',
+    }),
   searchMemory: (query: string, personId?: Id) => {
     const params = new URLSearchParams({ q: query });
     if (personId) params.set('person_id', personId);

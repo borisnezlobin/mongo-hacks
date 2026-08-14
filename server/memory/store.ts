@@ -258,6 +258,41 @@ export async function listConversations(): Promise<Conversation[]> {
   return collections.conversations().find({ owner_id: OWNER_ID }).sort({ started_at: -1 }).toArray();
 }
 
+export interface DeletedConversation {
+  utterances: number;
+  facts: number;
+  promises: number;
+}
+
+/**
+ * Delete a conversation and everything derived from it.
+ *
+ * Facts and promises go too. They cite a source utterance, so leaving them
+ * behind would leave memory asserting things it can no longer show you the
+ * evidence for — which is worse than losing them. Callers are expected to say
+ * so before asking.
+ */
+export async function deleteConversation(conversationId: Id): Promise<DeletedConversation> {
+  const scope = { owner_id: OWNER_ID, conversation_id: conversationId };
+  const utteranceIds = (await collections.utterances().find(scope).project({ _id: 1 }).toArray())
+    .map((utterance) => utterance._id as Id);
+
+  const source = { owner_id: OWNER_ID, primary_source_utterance_id: { $in: utteranceIds } };
+  const facts = await collections.facts().deleteMany(source);
+  const promises = await collections.promises().deleteMany({
+    owner_id: OWNER_ID,
+    source_utterance_id: { $in: utteranceIds },
+  });
+  const utterances = await collections.utterances().deleteMany(scope);
+  await collections.conversations().deleteOne({ _id: conversationId, owner_id: OWNER_ID });
+
+  return {
+    utterances: utterances.deletedCount,
+    facts: facts.deletedCount,
+    promises: promises.deletedCount,
+  };
+}
+
 export async function listUtterances(conversationId: Id): Promise<Utterance[]> {
   return collections
     .utterances()
