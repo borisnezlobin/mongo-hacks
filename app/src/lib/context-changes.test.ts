@@ -5,7 +5,7 @@ import { mockScript } from './mock-sse';
 
 describe('context change read model', () => {
   it('connects a replacement to its source, downstream loops, and recorded context gap', () => {
-    const state = applyEvents(createInitialState(), mockScript.map((item) => item.event));
+    const state = applyEvents(createInitialState(true), mockScript.map((item) => item.event));
     const change = deriveContextChanges(state).find((item) => item.id === 'f-maya-move-3');
 
     expect(change).toMatchObject({
@@ -21,7 +21,7 @@ describe('context change read model', () => {
   });
 
   it('never labels the person making the correction as missing it', () => {
-    const state = applyEvents(createInitialState(), mockScript.map((item) => item.event));
+    const state = applyEvents(createInitialState(true), mockScript.map((item) => item.event));
     const change = deriveContextChanges(state).find((item) => item.id === 'f-maya-move-3');
     expect(change?.may_have_missed.map((person) => person.name)).not.toContain('Maya');
   });

@@ -111,7 +111,12 @@ export function buildContextChangeGraph(input: ChangeGraphInput): ContextChangeR
 export async function listContextChanges(limit = 10): Promise<ContextChangeRecord[]> {
   const safeLimit = Math.max(1, Math.min(limit, 25));
   const previousFacts = await collections.facts()
-    .find({ owner_id: OWNER_ID, superseded_by: { $exists: true, $ne: null } })
+    .find({
+      owner_id: OWNER_ID,
+      // A superseded fact points at its replacement. $type:'string' expresses that
+      // directly; $ne:null does not typecheck because superseded_by is string|undefined.
+      superseded_by: { $exists: true, $type: 'string' },
+    })
     .sort({ superseded_at: -1, valid_from: -1 })
     .limit(safeLimit)
     .toArray();

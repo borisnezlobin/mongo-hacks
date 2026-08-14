@@ -53,6 +53,8 @@ export interface AmeliaState {
   conversations: Record<Id, Conversation>;
   amelia: AmeliaTurn | null;
   liveConversationId: Id | null;
+  /** Conversation of the most recent turn. Not the same as "live": it does not mean recording. */
+  lastUtteranceConversationId: Id | null;
   unknownCardDismissed: boolean;
 }
 
@@ -101,6 +103,7 @@ export function createInitialState(withSeed: boolean = MOCK_ENABLED): AmeliaStat
     conversations: {},
     amelia: null,
     liveConversationId: null,
+    lastUtteranceConversationId: null,
     unknownCardDismissed: false,
   };
   if (!withSeed) return empty;
@@ -167,6 +170,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
           ...state.conversations,
           [conversation._id]: { ...conversation, participant_ids: participants },
         },
+        lastUtteranceConversationId: event.conversation_id,
       };
     }
 
@@ -267,7 +271,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       const turn: AmeliaTurn =
         state.amelia && state.amelia.request_id === event.request_id
           ? state.amelia
-          : startAmeliaTurn(event.request_id, state.liveConversationId);
+          : startAmeliaTurn(event.request_id, state.liveConversationId ?? state.lastUtteranceConversationId);
       return {
         ...state,
         amelia: {
@@ -282,7 +286,7 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
       const turn: AmeliaTurn =
         state.amelia && state.amelia.request_id === event.request_id
           ? state.amelia
-          : startAmeliaTurn(event.request_id, state.liveConversationId);
+          : startAmeliaTurn(event.request_id, state.liveConversationId ?? state.lastUtteranceConversationId);
       return {
         ...state,
         amelia: { ...turn, reply: event.text, audio_url: event.audio_url, done: true },
