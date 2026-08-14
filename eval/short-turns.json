@@ -1,0 +1,180 @@
+{
+  "conversation_id": "eval-short-turns",
+  "utterances": [
+    {
+      "utterance_id": "u0",
+      "speaker": "Yan",
+      "text": "Okay so I was thinking about the Oakland thing.",
+      "start_ms": 0,
+      "end_ms": 2703
+    },
+    {
+      "utterance_id": "u1",
+      "speaker": "Maya",
+      "text": "Yeah?",
+      "start_ms": 2883,
+      "end_ms": 3340
+    },
+    {
+      "utterance_id": "u2",
+      "speaker": "Yan",
+      "text": "Like whether it actually makes sense to move in September at all.",
+      "start_ms": 3560,
+      "end_ms": 6953
+    },
+    {
+      "utterance_id": "u3",
+      "speaker": "Maya",
+      "text": "Mhm.",
+      "start_ms": 7103,
+      "end_ms": 7889
+    },
+    {
+      "utterance_id": "u4",
+      "speaker": "Jules",
+      "text": "Wait.",
+      "start_ms": 8049,
+      "end_ms": 9014
+    },
+    {
+      "utterance_id": "u5",
+      "speaker": "Jules",
+      "text": "September? I thought it was August.",
+      "start_ms": 9214,
+      "end_ms": 12367
+    },
+    {
+      "utterance_id": "u6",
+      "speaker": "Maya",
+      "text": "No, September first. It moved.",
+      "start_ms": 12607,
+      "end_ms": 15122
+    },
+    {
+      "utterance_id": "u7",
+      "speaker": "Priya",
+      "text": "Oh.",
+      "start_ms": 15292,
+      "end_ms": 15559
+    },
+    {
+      "utterance_id": "u8",
+      "speaker": "Priya",
+      "text": "That's actually way better for the venue booking, right?",
+      "start_ms": 15769,
+      "end_ms": 18832
+    },
+    {
+      "utterance_id": "u9",
+      "speaker": "Yan",
+      "text": "Right.",
+      "start_ms": 19022,
+      "end_ms": 19500
+    },
+    {
+      "utterance_id": "u10",
+      "speaker": "Maya",
+      "text": "Sure.",
+      "start_ms": 19650,
+      "end_ms": 20069
+    },
+    {
+      "utterance_id": "u11",
+      "speaker": "Jules",
+      "text": "I mean I guess.",
+      "start_ms": 20269,
+      "end_ms": 21675
+    },
+    {
+      "utterance_id": "u12",
+      "speaker": "Yan",
+      "text": "So we'd need the photos before then, is what I'm getting at.",
+      "start_ms": 21975,
+      "end_ms": 25504
+    },
+    {
+      "utterance_id": "u13",
+      "speaker": "Jules",
+      "text": "Yeah I'll send them.",
+      "start_ms": 25724,
+      "end_ms": 27363
+    },
+    {
+      "utterance_id": "u14",
+      "speaker": "Jules",
+      "text": "Tonight.",
+      "start_ms": 27523,
+      "end_ms": 28567
+    },
+    {
+      "utterance_id": "u15",
+      "speaker": "Priya",
+      "text": "Tonight?",
+      "start_ms": 28707,
+      "end_ms": 29187
+    },
+    {
+      "utterance_id": "u16",
+      "speaker": "Jules",
+      "text": "Tonight.",
+      "start_ms": 29337,
+      "end_ms": 30382
+    },
+    {
+      "utterance_id": "u17",
+      "speaker": "Maya",
+      "text": "Ha.",
+      "start_ms": 30562,
+      "end_ms": 30974
+    },
+    {
+      "utterance_id": "u18",
+      "speaker": "Yan",
+      "text": "Great. And Maya, you're still doing the Ethiopian place on Thursday?",
+      "start_ms": 31294,
+      "end_ms": 35360
+    },
+    {
+      "utterance_id": "u19",
+      "speaker": "Maya",
+      "text": "Obviously.",
+      "start_ms": 35560,
+      "end_ms": 36309
+    },
+    {
+      "utterance_id": "u20",
+      "speaker": "Priya",
+      "text": "Can I come?",
+      "start_ms": 36499,
+      "end_ms": 37280
+    },
+    {
+      "utterance_id": "u21",
+      "speaker": "Maya",
+      "text": "Obviously.",
+      "start_ms": 37450,
+      "end_ms": 38199
+    },
+    {
+      "utterance_id": "u22",
+      "speaker": "Yan",
+      "text": "Okay. I think that's everything I needed to figure out.",
+      "start_ms": 38479,
+      "end_ms": 41853
+    },
+    {
+      "utterance_id": "u23",
+      "speaker": "Jules",
+      "text": "Cool.",
+      "start_ms": 42053,
+      "end_ms": 43008
+    },
+    {
+      "utterance_id": "u24",
+      "speaker": "Priya",
+      "text": "Cool.",
+      "start_ms": 43168,
+      "end_ms": 43545
+    }
+  ]
+}

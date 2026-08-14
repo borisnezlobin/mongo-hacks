@@ -14,7 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:indexes": "node db/apply-indexes.mjs",
-    "seed": "node fixtures/seed.mjs"
+    "seed": "node fixtures/seed.mjs",
+    "eval:attribution": "tsx eval/attribution.mts",
+    "eval:fixture": "python3 eval/generate-fixture.py",
+    "sync": "node scripts/sync.mjs",
+    "watch": "node scripts/watch-main.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.116.0",
