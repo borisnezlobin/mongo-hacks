@@ -8,14 +8,27 @@
  */
 
 import type { Collection } from 'mongodb'
-import { EMBED_MIN_MS, OWNER_ID, type Utterance, type UtteranceEvent } from '../../shared/contracts'
+import {
+  EMBED_MIN_MS,
+  OWNER_ID,
+  type SpeakerPendingEvent,
+  type Utterance,
+  type UtteranceEvent,
+} from '../../shared/contracts'
 import type { AmeliaBus } from '../lib/bus'
-import { embedPcm } from './embed-client'
+import { embedPcm, embedPcmForClustering } from './embed-client'
+import { MIN_EMBED_MS, SpeakerClusterer } from './speaker-clusterer'
 import { StreamBuffer, UNKNOWN_SPEAKER } from './stream-buffer'
 import type { PendingUtterance, StreamProvider } from './types'
 
-/** How far behind the live edge an utterance must be to count as final. */
-const HOLDBACK_MS = 1200
+/**
+ * How far behind the live edge an utterance must be to count as final.
+ *
+ * This is a correctness margin, not a latency budget: it only has to outlast
+ * the provider's own revisions. It used to be 1200 ms, which put more than a
+ * second of dead air in front of every line on screen for no benefit.
+ */
+const HOLDBACK_MS = 300
 
 export interface AttributionService {
   attributeSpeaker(input: {
@@ -47,6 +60,7 @@ interface EmittedUtterance {
   text: string
   start_ms: number
   end_ms: number
+  is_final: boolean
 }
 
 export class AudioSession {
@@ -57,6 +71,13 @@ export class AudioSession {
   private readonly resolved = new Map<string, { person_id: string; voiceprint_id: string }>()
   private readonly resolving = new Set<string>()
   private readonly now: () => Date
+  /** Decides which provider turns are the same voice. See speaker-clusterer.ts. */
+  private readonly clusterer = new SpeakerClusterer()
+  private clustering = false
+  /** Provider turns already handed to the clusterer. */
+  private readonly submitted = new Set<string>()
+  /** Clusters we have already told the client are being attributed. */
+  private readonly announced = new Set<string>()
 
   constructor(private readonly options: SessionOptions) {
     this.buffer = new StreamBuffer(options.conversationId)
@@ -77,6 +98,7 @@ export class AudioSession {
   async pushAudio(pcm: Float32Array): Promise<void> {
     const positionMs = this.buffer.pushAudio(pcm)
     this.options.provider.pushAudio(pcm, positionMs)
+    await this.clusterTurns()
     await this.finalize(positionMs - HOLDBACK_MS)
     await this.maybeAttribute()
   }
@@ -89,23 +111,93 @@ export class AudioSession {
     } catch (error) {
       providerError = error
     }
+    await this.clusterTurns()
+    // Nothing more is coming, so held-back turns take their best guess now
+    // rather than staying nameless.
+    for (const assignment of this.clusterer.flush()) {
+      this.buffer.setSpeakerAlias(assignment.label, assignment.clusterId)
+    }
     await this.finalize(Number.POSITIVE_INFINITY)
     await this.maybeAttribute()
     if (providerError) throw providerError
   }
 
-  private async finalize(cutoffMs: number): Promise<void> {
-    for (const pending of this.buffer.finalizedUtterances(cutoffMs)) {
-      if (pending.session_speaker === UNKNOWN_SPEAKER) continue
-      const existing = this.emitted.get(pending.start_ms)
-      if (existing && existing.text === pending.text && existing.session_speaker === pending.session_speaker) {
-        continue
+  /**
+   * Fold newly-arrived provider turns into speaker clusters.
+   *
+   * Without a diarising model every VAD turn arrives under its own label, so
+   * this is where "who is talking" is actually decided. Turns long enough to
+   * embed are placed by voice; the rest are placed by adjacency inside the
+   * clusterer. Failures are swallowed: an unclustered turn keeps its provider
+   * label and simply stays unattributed, which is what used to happen to
+   * everything.
+   */
+  private async clusterTurns(): Promise<void> {
+    if (this.clustering) return
+    this.clustering = true
+    try {
+      for (const turn of this.buffer.unaliasedTurns()) {
+        // A turn too short to embed stays unaliased while the clusterer holds
+        // it waiting for a neighbour, so track submissions separately or we
+        // would hand it over again on every chunk.
+        if (this.submitted.has(turn.speaker)) continue
+        this.submitted.add(turn.speaker)
+        const durationMs = turn.end_ms - turn.start_ms
+        let embedding: number[] | null = null
+        const audio = this.buffer.audioForTurn(turn.speaker)
+        if (durationMs >= MIN_EMBED_MS && audio.length > 0) {
+          try {
+            embedding = (await embedPcmForClustering(audio)).vector
+          } catch (error) {
+            console.error(`clustering embed failed for ${turn.speaker}`, error)
+            this.submitted.delete(turn.speaker)
+            continue
+          }
+        }
+        for (const assignment of this.clusterer.add(
+          { label: turn.speaker, start_ms: turn.start_ms, end_ms: turn.end_ms },
+          embedding,
+        )) {
+          this.buffer.setSpeakerAlias(assignment.label, assignment.clusterId)
+        }
       }
-      await this.emitUtterance(pending, existing?.utterance_id)
+    } finally {
+      this.clustering = false
     }
   }
 
-  private async emitUtterance(pending: PendingUtterance, reuseId?: string): Promise<void> {
+  /**
+   * Emit everything the buffer currently believes: settled utterances as final,
+   * and whatever is still being said as a revisable draft.
+   *
+   * The draft half is what makes the transcript feel live. Text used to appear
+   * only once its turn was complete and had fallen behind the holdback, so a
+   * long sentence sat invisible until the speaker stopped talking. Drafts share
+   * the utterance_id their final version will use, so the client replaces in
+   * place rather than showing the line twice.
+   */
+  private async finalize(cutoffMs: number): Promise<void> {
+    for (const pending of this.buffer.utterances()) {
+      if (pending.session_speaker === UNKNOWN_SPEAKER) continue
+      const isFinal = pending.end_ms <= cutoffMs
+      const existing = this.emitted.get(pending.start_ms)
+      if (
+        existing &&
+        existing.text === pending.text &&
+        existing.session_speaker === pending.session_speaker &&
+        existing.is_final === isFinal
+      ) {
+        continue
+      }
+      await this.emitUtterance(pending, isFinal, existing?.utterance_id)
+    }
+  }
+
+  private async emitUtterance(
+    pending: PendingUtterance,
+    isFinal: boolean,
+    reuseId?: string,
+  ): Promise<void> {
     const identity = this.resolved.get(pending.session_speaker)
     const record: EmittedUtterance = {
       utterance_id: reuseId ?? crypto.randomUUID(),
@@ -115,9 +207,13 @@ export class AudioSession {
       text: pending.text,
       start_ms: pending.start_ms,
       end_ms: pending.end_ms,
+      is_final: isFinal,
     }
     this.emitted.set(pending.start_ms, record)
-    await this.persist(record)
+    // Drafts are not written to the database: they are superseded within a
+    // second or two, and persisting each keystroke of a sentence would triple
+    // the write volume for nothing.
+    if (isFinal) await this.persist(record)
     this.emitEvent(record)
   }
 
@@ -155,7 +251,7 @@ export class AudioSession {
       text: record.text,
       start_ms: record.start_ms,
       end_ms: record.end_ms,
-      is_final: true,
+      is_final: record.is_final,
     }
     this.options.bus.emit(event)
   }
@@ -168,7 +264,9 @@ export class AudioSession {
    */
   private async maybeAttribute(): Promise<void> {
     if (!this.options.identity) return
-    for (const speaker of this.buffer.speakersOverFloor(Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS))) {
+    const floorMs = Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS)
+    this.announcePending(floorMs)
+    for (const speaker of this.buffer.speakersOverFloor(floorMs)) {
       if (speaker === UNKNOWN_SPEAKER || this.resolved.has(speaker) || this.resolving.has(speaker)) {
         continue
       }
@@ -198,6 +296,36 @@ export class AudioSession {
       } finally {
         this.resolving.delete(speaker)
       }
+    }
+  }
+
+  /**
+   * Tell the client which speakers we are still working on, so their lines read
+   * "Attributing…" rather than "Unknown speaker". Attribution can take a few
+   * seconds of pooled speech; the transcript should not pretend that means we
+   * failed. Emitted once per cluster, and superseded by the IdentityEvent.
+   */
+  private announcePending(floorMs: number): void {
+    const pending = new Map<string, string[]>()
+    for (const record of this.emitted.values()) {
+      const speaker = record.session_speaker
+      if (speaker === UNKNOWN_SPEAKER || record.person_id || this.resolved.has(speaker)) continue
+      const ids = pending.get(speaker) ?? []
+      ids.push(record.utterance_id)
+      pending.set(speaker, ids)
+    }
+    for (const [speaker, utteranceIds] of pending) {
+      if (this.announced.has(speaker)) continue
+      this.announced.add(speaker)
+      const event: SpeakerPendingEvent = {
+        type: 'speaker_pending',
+        conversation_id: this.options.conversationId,
+        session_speaker: speaker,
+        utterance_ids: utteranceIds,
+        speech_ms: this.buffer.speechMsFor(speaker),
+        embed_min_ms: floorMs,
+      }
+      this.options.bus.emit(event)
     }
   }
 

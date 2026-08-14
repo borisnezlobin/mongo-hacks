@@ -15,10 +15,27 @@ export interface Embedding {
  * failure — let it throw.
  */
 export async function embedPcm(pcm: Float32Array): Promise<Embedding> {
+  return post('/embed', pcm)
+}
+
+/**
+ * Embed a clip below the 3000 ms floor, for clustering only.
+ *
+ * A short embedding is far too noisy to name a person by, but it is perfectly
+ * good at the much easier question the clusterer asks: is this the same voice
+ * as the one that was talking a moment ago, on the same microphone, in the same
+ * room. Never pass one of these to attribution — pass the cluster's pooled
+ * audio instead.
+ */
+export async function embedPcmForClustering(pcm: Float32Array): Promise<Embedding> {
+  return post('/embed/unsafe', pcm)
+}
+
+async function post(path: string, pcm: Float32Array): Promise<Embedding> {
   // Copy into a standalone ArrayBuffer sized to exactly these samples; a
   // Uint8Array view trips over the DOM/node BodyInit type split.
   const payload = pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer
-  const response = await fetch(`${SIDECAR_URL()}/embed`, {
+  const response = await fetch(`${SIDECAR_URL()}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/octet-stream' },
     body: payload,
