@@ -7,6 +7,7 @@ import { colors, spacing } from '../constants/theme';
 import type { AmeliaTurn } from '../lib/store';
 
 interface AmeliaPillProps {
+  hidden?: boolean;
   turn: AmeliaTurn | null;
   bottomOffset: number;
   onPress?(): void;
@@ -19,7 +20,7 @@ interface AmeliaPillProps {
  * first turn. With an active turn it shows the latest step and a tap opens the
  * transcript; idle it reads as a quiet "Ask Amelia" affordance.
  */
-export function AmeliaPill({ turn, bottomOffset, onPress, onLongPress }: AmeliaPillProps) {
+export function AmeliaPill({ hidden, turn, bottomOffset, onPress, onLongPress }: AmeliaPillProps) {
   const entrance = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -35,6 +36,10 @@ export function AmeliaPill({ turn, bottomOffset, onPress, onLongPress }: AmeliaP
     ? turn.reply ?? turn.steps[turn.steps.length - 1]?.message ?? 'Thinking'
     : 'Ask Amelia';
   const speaking = Boolean(turn?.reply);
+
+  // Home carries its own ask field, so the idle pill there is a duplicate affordance that
+  // also lands on top of the record button.
+  if (hidden) return null;
 
   return (
     <Animated.View
