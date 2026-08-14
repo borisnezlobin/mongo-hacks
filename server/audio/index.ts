@@ -1,15 +1,14 @@
 /**
- * Lane A entry: WebSocket ingest, WAV replay, and session wiring.
+ * Audio entry: WebSocket ingest and session wiring.
  *
- * The live phone uplink and the fixture replay build the same AudioSession;
- * only the provider differs. Real diarisation/transcription providers slot in
- * behind env keys, and the fixture provider carries every keyless demo.
+ * Fixture replay used to live here too, behind POST /replay/start. It wrote
+ * invented conversations and invented people straight into the real database,
+ * which is indistinguishable from capture once it is on screen. Removed: the
+ * offline evaluation harness in eval/ measures the pipeline without touching
+ * anyone's data.
  */
 
-import { readFile } from 'node:fs/promises'
 import type { Server } from 'node:http'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { Hono } from 'hono'
 import { MongoClient, type Collection } from 'mongodb'
 // `ws` is CommonJS, so Node's ESM loader does not expose its named exports and the value
@@ -24,6 +23,7 @@ const { WebSocketServer } = createRequire(import.meta.url)('ws') as {
 import {
   AUDIO_FRAME_BYTES,
   OWNER_ID,
+  type Person,
   type ServerDependencies,
   type StreamHandshake,
   type Utterance,
@@ -31,37 +31,56 @@ import {
 import type { AmeliaBus } from '../lib/bus'
 import { createIdentityService, type IdentityService } from '../identity'
 import { embedPcm } from './embed-client'
-import { FixtureProvider } from './fixture-provider'
 import { OpenAIRealtimeProvider } from './openai-realtime-provider'
 import { OpenRouterProvider } from './openrouter-provider'
 import { PyannoteProvider } from './pyannote-provider'
+import { titleConversation } from '../memory/title'
 import { AudioSession } from './session'
-import { SAMPLE_RATE, type StreamProvider } from './types'
-
-const FRAME_SAMPLES = AUDIO_FRAME_BYTES / 4
+import type { StreamProvider } from './types'
 
 interface AudioDeps {
   bus: AmeliaBus
   identity: IdentityService | null
   utterances: Collection<Utterance> | null
   conversations: Collection<{ _id: string }> | null
+  people: Collection<Person> | null
 }
 
 let cached: Promise<AudioDeps> | null = null
 
 /**
- * Resolve Mongo-backed dependencies once, lazily. Without MONGODB_URI the
- * session still runs — emit-only, nothing persisted — so the fixture demo
- * works before the cluster exists.
+ * How long to wait for Atlas before giving up and recording without it. Short
+ * on purpose: the driver's 30s default means the first spoken word of a session
+ * is half a minute old before anything reaches the screen.
+ */
+const DB_CONNECT_TIMEOUT_MS = 5_000
+
+/**
+ * Resolve Mongo-backed dependencies once, lazily.
+ *
+ * Persistence is optional and always has been — without MONGODB_URI the session
+ * runs emit-only. What was not optional, and should have been, is Atlas being
+ * *reachable*: a connection failure used to reject, leaving the session null, so
+ * every audio frame after it died with the thoroughly misleading "binary frame
+ * before hello" and the user saw a recording that produced nothing at all. A
+ * dropped database costs us history and voiceprints. It must not cost us the
+ * transcript, which is the part the user is watching.
+ *
+ * The rejection was also cached, so one failed connect disabled audio for the
+ * lifetime of the process. Now a failure degrades this session and is retried
+ * on the next one.
  */
 async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
+  const emitOnly = (): AudioDeps => ({ bus, identity: null, utterances: null, conversations: null, people: null })
   cached ??= (async () => {
     const uri = process.env.MONGODB_URI
     if (!uri) {
       console.warn('MONGODB_URI not set: audio sessions run emit-only, identity disabled')
-      return { bus, identity: null, utterances: null, conversations: null }
+      return emitOnly()
     }
-    const client = await new MongoClient(uri).connect()
+    const client = await new MongoClient(uri, {
+      serverSelectionTimeoutMS: DB_CONNECT_TIMEOUT_MS,
+    }).connect()
     const db = client.db()
     const identity: IdentityService = createIdentityService({
       collections: {
@@ -78,16 +97,44 @@ async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
       identity,
       utterances: db.collection<Utterance>('utterances'),
       conversations: db.collection<{ _id: string }>('conversations'),
+      people: db.collection<Person>('people'),
     }
   })()
-  return cached
+
+  try {
+    return await cached
+  } catch (error) {
+    console.error(
+      'Mongo unavailable — recording anyway, but nothing will be saved and speakers ' +
+        'cannot be identified. Check the Atlas IP allowlist.',
+      (error as Error).message,
+    )
+    cached = null
+    return emitOnly()
+  }
 }
 
-async function fixtureProvider(): Promise<StreamProvider> {
-  const fixture = JSON.parse(
-    await readFile(join(dirname(fileURLToPath(import.meta.url)), '../../fixtures/transcript.json'), 'utf8'),
-  ) as { utterances: { speaker: string; text: string; start_ms: number; end_ms: number }[] }
-  return new FixtureProvider(fixture.utterances)
+/**
+ * Name the conversation from what was said, once recording stops.
+ *
+ * Fire-and-forget by design: a failed title is a cosmetic loss, and the socket
+ * is already closing. It must never surface as an ingest error.
+ */
+async function nameConversation(conversationId: string, bus: AmeliaBus): Promise<void> {
+  const deps = await audioDeps(bus)
+  if (!deps.utterances || !deps.conversations || !deps.people) return
+  try {
+    const people = await deps.people.find({ owner_id: OWNER_ID }).toArray()
+    const names = new Map(people.map((person) => [person._id, person.name]))
+    await titleConversation(conversationId, OWNER_ID, {
+      utterances: deps.utterances,
+      conversations: deps.conversations,
+      bus,
+      nameFor: (id) => names.get(id),
+    })
+  } catch (error) {
+    console.error(`titling failed for ${conversationId}`, error)
+  }
 }
 
 /**
@@ -113,11 +160,7 @@ export function liveProvider(env: Record<string, string | undefined> = process.e
   })
 }
 
-async function createSession(
-  conversationId: string,
-  bus: AmeliaBus,
-  mode: 'live' | 'fixture',
-): Promise<AudioSession> {
+async function createSession(conversationId: string, bus: AmeliaBus): Promise<AudioSession> {
   const deps = await audioDeps(bus)
   // Sessions wrote utterances but never a conversation document, so GET /conversations
   // only ever returned the seeded ones and recordings were invisible in the app's list.
@@ -135,60 +178,13 @@ async function createSession(
   return new AudioSession({
     conversationId,
     bus,
-    provider: mode === 'fixture' ? await fixtureProvider() : liveProvider(),
+    provider: liveProvider(),
     identity: deps.identity,
     utterances: deps.utterances,
   })
 }
 
-/**
- * Replay the fixture WAV through the identical ingest path as a live socket.
- * paced=true streams in realtime for demos; the default runs as fast as the
- * pipeline drains, for gates and tests.
- */
-async function replayFixture(
-  bus: AmeliaBus,
-  paced: boolean,
-  mode: 'live' | 'fixture' = 'fixture',
-): Promise<{ conversation_id: string; utterances_emitted: number }> {
-  const wavBytes = await readFile(join(dirname(fileURLToPath(import.meta.url)), '../../fixtures/conversation.wav'))
-  const { readWav } = await import('./wav')
-  const audio = readWav(wavBytes)
-  if (audio.sampleRate !== SAMPLE_RATE) {
-    throw new Error(`fixture must be ${SAMPLE_RATE} Hz, got ${audio.sampleRate}`)
-  }
-  const conversationId = `replay-${Date.now()}`
-  const session = await createSession(conversationId, bus, mode)
-  const emitted = new Set<string>()
-  const unsubscribe = bus.subscribe((event) => {
-    if (event.type === 'utterance' && event.conversation_id === conversationId) {
-      emitted.add(event.utterance_id)
-    }
-  })
-  try {
-    for (let offset = 0; offset < audio.samples.length; offset += FRAME_SAMPLES) {
-      const frame = audio.samples.subarray(offset, offset + FRAME_SAMPLES)
-      await session.pushAudio(frame)
-      if (paced) await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    await session.end()
-  } finally {
-    unsubscribe()
-  }
-  return { conversation_id: conversationId, utterances_emitted: emitted.size }
-}
-
 export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
-  app.post('/replay/start', async (context) => {
-    const paced = context.req.query('paced') === '1'
-    // provider=live runs the fixture audio through the real transcription
-    // path instead of the canned transcript, which exercises everything a
-    // phone would exercise without needing a microphone in the room.
-    const mode = context.req.query('provider') === 'live' ? 'live' : 'fixture'
-    const result = await replayFixture(deps.bus as AmeliaBus, paced, mode)
-    return context.json(result, 200)
-  })
-
   // Enrollment from raw audio: the 10 second flow. The phone streams PCM
   // (same wire format as /stream) with the name as a query parameter; the
   // sidecar turns it into a voiceprint and identity stores it.
@@ -241,7 +237,7 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
           const hello = JSON.parse(data.toString()) as StreamHandshake
           if (!hello.conversation_id) throw new Error('conversation_id missing')
           enqueue(async () => {
-            session = await createSession(hello.conversation_id, deps.bus as AmeliaBus, 'live')
+            session = await createSession(hello.conversation_id, deps.bus as AmeliaBus)
           })
         } catch (error) {
           socket.close(1002, `bad hello: ${(error as Error).message}`)
@@ -257,15 +253,27 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
       )
       // Frames are serialized through a queue so revisions stay ordered.
       enqueue(async () => {
-        if (!session) throw new Error('binary frame before hello')
+        if (!session) {
+          // Distinguish the client's fault from ours. Session setup failing
+          // after a valid hello used to surface as "binary frame before hello",
+          // which sent us looking at the uplink's framing for a problem that
+          // was really a dead database connection.
+          throw new Error(
+            helloReceived
+              ? 'session setup failed after hello — see the earlier error'
+              : 'binary frame before hello',
+          )
+        }
         await session.pushAudio(pcm)
       })
     })
 
     socket.on('close', () => {
       enqueue(async () => {
+        const finished = session?.conversationId
         await session?.end()
         session = null
+        if (finished) await nameConversation(finished, deps.bus as AmeliaBus)
       })
     })
   })
