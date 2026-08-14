@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import {
+  ActionSheetIOS,
+  Alert,
+  Clipboard,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
 import { CaretLeftIcon, CheckIcon, PencilSimpleIcon } from 'phosphor-react-native';
 import type { Id } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
@@ -111,6 +121,49 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     setEditingTitle(false);
   };
 
+  /**
+   * Long-press a turn for the things you actually want from a transcript:
+   * its text, or the speaker's name when Amelia got it wrong.
+   *
+   * Clipboard comes from react-native core, which warns that it is deprecated.
+   * expo-clipboard is the successor but is a native module, and adding one
+   * means rebuilding the dev client — not worth blocking on. Swap it at the
+   * next native rebuild.
+   */
+  const onUtteranceMenu = (utterance: { _id: Id; text: string; start_ms: number }, person?: PersonRecord) => {
+    const speaker = person ? person.name : 'Unknown speaker';
+    const withSpeaker = `${speaker}: ${utterance.text}`;
+    const actions: { label: string; run(): void }[] = [
+      { label: 'Copy text', run: () => Clipboard.setString(utterance.text) },
+      { label: 'Copy with speaker', run: () => Clipboard.setString(withSpeaker) },
+      {
+        label: person ? 'Change speaker' : 'Name this speaker',
+        run: () => onNamePerson(
+          person ?? {
+            _id: utterance._id,
+            owner_id: conversation?.owner_id ?? OWNER_PERSON_ID,
+            name: '',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          [utterance._id],
+        ),
+      },
+    ];
+
+    if (Platform.OS === 'ios') {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: [...actions.map((a) => a.label), 'Cancel'], cancelButtonIndex: actions.length },
+        (index) => actions[index]?.run(),
+      );
+      return;
+    }
+    Alert.alert(speaker, utterance.text, [
+      ...actions.map((a) => ({ text: a.label, onPress: a.run })),
+      { text: 'Cancel', style: 'cancel' as const },
+    ]);
+  };
+
   // A live conversation has no record until the first utterance arrives, so an empty id is
   // "waiting for the first voice", not "missing".
   if (!conversation) {
@@ -191,6 +244,8 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
               utterance={utterance}
               person={person}
               showHeader={showHeader}
+              attributing={state.attributing[utterance._id] === true}
+              onLongPress={() => onUtteranceMenu(utterance, person)}
               onPressPerson={() => person && navigation.openPerson(person._id)}
               // Unattributed turns still need a way in, so synthesise a person record from
               // the voiceprint. Without this the speaker Amelia has not resolved yet — often

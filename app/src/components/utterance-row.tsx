@@ -12,8 +12,11 @@ interface UtteranceRowProps {
   person?: PersonRecord;
   /** False when the previous row is from the same speaker, Slack-style grouping. */
   showHeader: boolean;
+  /** The server has heard this voice but has not finished working out whose it is. */
+  attributing?: boolean;
   onPressPerson?(): void;
   onName?(): void;
+  onLongPress?(): void;
 }
 
 const AVATAR_SIZE = 36;
@@ -31,8 +34,10 @@ export function UtteranceRow({
   utterance,
   person,
   showHeader,
+  attributing = false,
   onPressPerson,
   onName,
+  onLongPress,
 }: UtteranceRowProps) {
   const identityFade = useRef(new Animated.Value(1)).current;
   const highlight = useRef(new Animated.Value(0)).current;
@@ -54,6 +59,24 @@ export function UtteranceRow({
   }, [utterance.person_id, identityFade, highlight]);
 
   const unnamed = !person || isUnnamed(person);
+  const pending = attributing && !person;
+
+  // A slow breath rather than a spinner: the row is already readable, and only
+  // the name is provisional. Anything busier would draw the eye away from the
+  // words, which are the part that arrived on time.
+  const pulse = useRef(new Animated.Value(0.45)).current;
+  useEffect(() => {
+    if (!pending) return;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 750, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0.45, duration: 750, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pending, pulse]);
+
   const backgroundColor = highlight.interpolate({
     inputRange: [0, 1],
     outputRange: ['rgba(0,0,0,0)', colors.liveSoft],
@@ -81,24 +104,40 @@ export function UtteranceRow({
       <View style={styles.column}>
         {showHeader ? (
           <Animated.View style={[styles.header, { opacity: identityFade }]}>
-            <Pressable onPress={unnamed && onName ? onName : onPressPerson} style={styles.nameRow}>
-              <AppText
-                variant="bodyStrong"
-                color={unnamed ? colors.accent : colors.ink}
-                style={styles.name}
-              >
-                {displayName(person)}
-              </AppText>
-              {unnamed && onName ? <UserPlusIcon size={13} color={colors.accent} weight="bold" /> : null}
-            </Pressable>
+            {pending ? (
+              <Animated.View style={{ opacity: pulse }}>
+                <AppText variant="bodyStrong" color={colors.inkMuted} style={styles.name}>
+                  Attributing…
+                </AppText>
+              </Animated.View>
+            ) : (
+              <Pressable onPress={unnamed && onName ? onName : onPressPerson} style={styles.nameRow}>
+                <AppText
+                  variant="bodyStrong"
+                  color={unnamed ? colors.accent : colors.ink}
+                  style={styles.name}
+                >
+                  {displayName(person)}
+                </AppText>
+                {unnamed && onName ? <UserPlusIcon size={13} color={colors.accent} weight="bold" /> : null}
+              </Pressable>
+            )}
             <AppText variant="caption">{formatOffset(utterance.start_ms)}</AppText>
           </Animated.View>
         ) : null}
 
-        <AppText variant="body" color={utterance.is_final ? colors.ink : colors.inkMuted}>
-          {utterance.text}
-          {utterance.is_final ? '' : '…'}
-        </AppText>
+        <Pressable onLongPress={onLongPress} delayLongPress={300} disabled={!onLongPress}>
+          {({ pressed }) => (
+            <AppText
+              variant="body"
+              color={utterance.is_final ? colors.ink : colors.inkMuted}
+              style={pressed && onLongPress ? styles.pressed : undefined}
+            >
+              {utterance.text}
+              {utterance.is_final ? '' : '…'}
+            </AppText>
+          )}
+        </Pressable>
 
       </View>
     </Animated.View>
