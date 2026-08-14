@@ -130,8 +130,11 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
         _id: event.utterance_id,
         owner_id: OWNER_ID,
         conversation_id: event.conversation_id,
-        person_id: event.person_id,
-        voiceprint_id: event.voiceprint_id,
+        // Never downgrade a known speaker to unknown. Polling re-delivers the server's copy
+        // of a turn, which has no person_id for anything the voiceprint pass could not
+        // resolve — that was erasing names the owner had just set, a second or two later.
+        person_id: event.person_id ?? previous?.person_id,
+        voiceprint_id: event.voiceprint_id ?? previous?.voiceprint_id,
         text: event.text,
         start_ms: event.start_ms,
         end_ms: event.end_ms,
