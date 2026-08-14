@@ -124,20 +124,42 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
         return { status: 'pending', reason: 'below_floor' };
       }
 
-      const [match] = await collections.voiceprints
+      const matches = await collections.voiceprints
         .aggregate<VoiceprintMatch>(voiceprintSearchPipeline(input.embedding))
         .toArray();
-      const best = match
-        ? { voiceprint: match, confidence: rawCosine(match.score) }
-        : undefined;
 
       const threshold = Number(process.env.ATTRIBUTION_THRESHOLD ?? ATTRIBUTION_THRESHOLD)
-      if (best && best.confidence >= threshold) {
-        const person = await collections.people.findOne({
-          _id: best.voiceprint.person_id,
+
+      /**
+       * Walk the candidates rather than trusting only the nearest.
+       *
+       * A voiceprint whose person has been merged away or deleted still sits in
+       * the vector index and still wins the search. Throwing on it — which is
+       * what this used to do — took down attribution for that speaker entirely:
+       * the session swallows the error and retries, hits the same orphan, and
+       * the speaker stays nameless for the whole conversation. One stale row
+       * silently disabled recognition for the person it used to belong to.
+       */
+      let best: { voiceprint: VoiceprintMatch; confidence: number; person: Person } | undefined;
+      for (const match of matches) {
+        const confidence = rawCosine(match.score);
+        if (confidence < threshold) break;
+        const candidate = await collections.people.findOne({
+          _id: match.person_id,
           owner_id: OWNER_ID,
         });
-        if (!person) throw new Error(`Unknown person: ${best.voiceprint.person_id}`);
+        if (!candidate) {
+          console.warn(
+            `orphaned voiceprint ${match._id} points at missing person ${match.person_id} — skipping`,
+          );
+          continue;
+        }
+        best = { voiceprint: match, confidence, person: candidate };
+        break;
+      }
+
+      if (best) {
+        const person = best.person;
         await collections.utterances.updateMany(
           { _id: { $in: input.utterance_ids }, owner_id: OWNER_ID },
           {
