@@ -129,6 +129,87 @@ describe('identity service', () => {
     expect(harness.emit).not.toHaveBeenCalled();
   });
 
+  /**
+   * Found in the live database: 6 of 11 voiceprints pointed at people that no
+   * longer existed, including the owner's own enrollment. An orphan still wins
+   * the vector search, and throwing on it took attribution down for that
+   * speaker for the whole conversation — the session swallows the error, hits
+   * the same orphan next chunk, and nobody is ever named.
+   */
+  it('skips an orphaned voiceprint and matches the next real person', async () => {
+    const harness = createHarness({
+      people: [{
+        _id: 'person-1',
+        owner_id: OWNER_ID,
+        name: 'Sam',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+      voiceprints: [
+        {
+          // Nearer match, but its person was merged away long ago.
+          _id: 'voiceprint-orphan',
+          owner_id: OWNER_ID,
+          person_id: 'person-deleted',
+          embedding: [0.95, 0.31],
+          duration_ms: 4_000,
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'voiceprint-1',
+          owner_id: OWNER_ID,
+          person_id: 'person-1',
+          embedding: [0.8, 0.6],
+          duration_ms: 4_000,
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      utterances: [{
+        _id: 'utterance-1',
+        owner_id: OWNER_ID,
+        conversation_id: 'conversation-1',
+        text: 'Hello',
+        start_ms: 0,
+        end_ms: 3_000,
+        is_final: true,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [1, 0],
+      duration_ms: EMBED_MIN_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+    });
+
+    expect(result).toMatchObject({ status: 'matched', person_id: 'person-1' });
+  });
+
+  it('creates a new person when every candidate is orphaned', async () => {
+    const harness = createHarness({
+      voiceprints: [{
+        _id: 'voiceprint-orphan',
+        owner_id: OWNER_ID,
+        person_id: 'person-deleted',
+        embedding: [1, 0],
+        duration_ms: 4_000,
+        created_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [1, 0],
+      duration_ms: EMBED_MIN_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+    });
+
+    // Not an exception, and not silence: a nameless speaker we can name later.
+    expect(result.status).toBe('created');
+  });
+
   it('attributes a known voice and publishes the identity', async () => {
     const harness = createHarness({
       people: [{
