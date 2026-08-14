@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import {
   ArrowUpIcon,
   CaretRightIcon,
@@ -9,6 +9,7 @@ import {
 } from 'phosphor-react-native';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
+import { SwipeToDelete } from '../components/swipe-to-delete';
 import { Card, Chip, EmptyState, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
 import { api } from '../lib/api';
@@ -22,7 +23,7 @@ interface HomeScreenProps {
 }
 
 export function HomeScreen({ contentInset }: HomeScreenProps) {
-  const { state, ingest, upsertConversations, upsertPeople } = useStore();
+  const { state, ingest, upsertConversations, upsertPeople, deleteConversation } = useStore();
   const conversations = useConversations();
   const navigation = useNavigation();
   const { ask, clear, pending, result } = useAsk();
@@ -85,6 +86,24 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
 
   const submit = () => {
     ask(query);
+  };
+
+  const confirmDelete = (conversationId: string, title: string) => {
+    Alert.alert(
+      `Delete "${title}"?`,
+      'The transcript and anything Amelia remembered from it are removed. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            deleteConversation(conversationId);
+            await api.deleteConversation(conversationId).catch(() => {});
+          },
+        },
+      ],
+    );
   };
 
   return (
@@ -180,9 +199,13 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
                 .map((id) => state.people[id])
                 .filter(Boolean) as PersonRecord[];
               const isLive = conversation._id === state.liveConversationId;
+              const title = conversation.title ?? 'Untitled conversation';
               return (
-                <Pressable
+                <SwipeToDelete
                   key={conversation._id}
+                  onDelete={() => confirmDelete(conversation._id, title)}
+                >
+                <Pressable
                   onPress={() => navigation.openConversation(conversation._id)}
                   style={({ pressed }) => [styles.conversationRow, pressed && styles.dimmed]}
                 >
@@ -192,7 +215,7 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
                   <View style={styles.conversationCopy}>
                     <View style={styles.conversationTitleRow}>
                       <AppText variant="bodyStrong" numberOfLines={1} style={styles.flexible}>
-                        {conversation.title ?? 'Untitled conversation'}
+                        {title}
                       </AppText>
                       {isLive ? <Chip label="Live" tone="live" /> : null}
                     </View>
@@ -211,6 +234,7 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
                   </View>
                   <CaretRightIcon size={16} color={colors.inkFaint} />
                 </Pressable>
+                </SwipeToDelete>
               );
             })
           )}
