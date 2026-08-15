@@ -194,6 +194,15 @@ export function voiceprintSearchPipeline(
   ];
 }
 
+/**
+ * Both spellings of "nobody has named this person yet" count as unnamed.
+ * Identity writes 'Unknown'; rows seeded elsewhere have used an empty string.
+ */
+function isNamed(person: Person): boolean {
+  const name = person.name?.trim();
+  return Boolean(name) && name !== 'Unknown';
+}
+
 /** Atlas cosine scores are normalized to [0, 1]; contracts use raw cosine. */
 export function rawCosine(atlasScore: number): number {
   const raw = Math.max(-1, Math.min(1, atlasScore * 2 - 1));
@@ -475,10 +484,31 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
       }).toArray();
       if (people.length !== personIds.length) throw new Error('Cannot merge unknown people');
 
-      const survivor = people.reduce((oldest, person) => (
-        person.created_at < oldest.created_at ? person : oldest
+      const oldest = people.reduce((held, person) => (
+        person.created_at < held.created_at ? person : held
       ));
-      const loserIds = personIds.filter((personId) => personId !== survivor._id);
+      const loserIds = personIds.filter((personId) => personId !== oldest._id);
+
+      /**
+       * The oldest record survives, but the best NAME does.
+       *
+       * Merging is usually "this Unknown is actually Maya", and the Unknown is
+       * generally the older row — it was created the first time the voice was
+       * heard, before anyone named it. Keeping the survivor's name verbatim
+       * throws away the only name a human ever supplied and leaves the merged
+       * person called Unknown.
+       */
+      const named = people.find((person) => person._id !== oldest._id && isNamed(person));
+      const survivor: Person = isNamed(oldest) || !named
+        ? oldest
+        : { ...oldest, name: named.name, updated_at: timestamp() };
+
+      if (survivor.name !== oldest.name) {
+        await collections.people.updateOne(
+          { _id: survivor._id, owner_id: OWNER_ID },
+          { $set: { name: survivor.name, updated_at: survivor.updated_at } },
+        );
+      }
       const affectedFilter = { owner_id: OWNER_ID, person_id: { $in: loserIds } };
       const conversationIds = (await collections.utterances.distinct(
         'conversation_id',
