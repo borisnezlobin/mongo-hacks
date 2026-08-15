@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   check('every fixture utterance reached Atlas', stored === transcript.utterances.length, `${stored} stored`);
 
   const moveHistory = await getFactHistory('p-maya', 'move');
-  const currentMove = await resolveFactState('p-maya', 'move');
+  const { current: currentMove, superseded: pastMoves } = await resolveFactState('p-maya', 'move');
   check('Maya has a supersession chain on her move date', moveHistory.length >= 2, `${moveHistory.length} facts`);
   check(
     'the live move fact is the September 15 one',
@@ -61,10 +61,18 @@ async function main(): Promise<void> {
     'the superseded fact points at its replacement',
     moveHistory.some((fact) => fact.superseded_by === currentMove?._id),
   );
+  // The chain has to be reachable from the read Amelia actually performs, not
+  // only from a full history scan — that gap is what kept the trace saying
+  // "move date: Sep 15" instead of "Aug 15 → Sep 15".
+  check(
+    'resolveFactState reaches the superseded claim',
+    pastMoves.length >= 1,
+    pastMoves.map((fact) => fact.claim).join(' -> ') || 'no history',
+  );
 
   // "Maya loves Ethiopian food, and me too" — one sentence, two people.
-  const mayaFood = await resolveFactState('p-maya', 'preference');
-  const julesFood = await resolveFactState('p-jules', 'preference');
+  const mayaFood = (await resolveFactState('p-maya', 'preference')).current;
+  const julesFood = (await resolveFactState('p-jules', 'preference')).current;
   check('a fact stated in someone else\'s sentence attached to Maya', mayaFood !== null, mayaFood?.claim ?? 'none');
   check('"me too" attached the same fact to Jules', julesFood !== null, julesFood?.claim ?? 'none');
 

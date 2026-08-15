@@ -224,10 +224,25 @@ export interface SearchMemoryResult {
   source_utterance_id?: Id;
 }
 
+/**
+ * An attribute's current value together with what it replaced.
+ *
+ * `Fact.superseded_by` points FORWARD, old → new. The current fact therefore
+ * has it unset and holds no reference to its own history, which made the chain
+ * unreachable from a caller holding only the current row — the reason Amelia
+ * could say "move date: Aug 20" but never "Aug 15 → Aug 20", which is the whole
+ * point of storing facts append-only.
+ */
+export interface FactState {
+  current: Fact | null;
+  /** Oldest first, ending at whatever `current` directly replaced. Excludes `current`. */
+  superseded: Fact[];
+}
+
 export interface MemoryApi {
   searchMemory(query: string, personId?: Id): Promise<SearchMemoryResult[]>;
   getPerson(id: Id): Promise<Person | null>;
-  resolveFactState(personId: Id, attribute: string): Promise<Fact | null>;
+  resolveFactState(personId: Id, attribute: string): Promise<FactState>;
   createReminder(promiseId: Id, fireAt: Timestamp): Promise<Reminder>;
   addNote(personId: Id, text: string): Promise<Fact>;
 }

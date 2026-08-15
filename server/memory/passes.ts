@@ -254,7 +254,7 @@ export async function reconcileFactCandidate(bus: AmeliaBus, candidate: FactCand
   const alreadyRecorded = await findFactBySourceClaim(candidate.primary_source_utterance_id, candidate.claim);
   if (alreadyRecorded) return;
 
-  const current = await resolveFactState(candidate.person_id, candidate.attribute);
+  const { current } = await resolveFactState(candidate.person_id, candidate.attribute);
   if (!current) {
     await recordFact(bus, candidate);
     return;
