@@ -3,8 +3,6 @@ import type {
   AskRequest,
   ConversationSummary,
   MemoryApi,
-  MergePeopleRequest,
-  NamePersonRequest,
   ServerDependencies,
 } from '../../shared/contracts';
 import type { AmeliaBus } from '../lib/bus';
@@ -51,24 +49,15 @@ export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void 
     return person ? context.json(person) : context.json({ error: 'person not found' }, 404);
   });
 
-  app.post('/people/merge', async (context) => {
-    const body = await context.req.json<MergePeopleRequest>();
-    return context.json(await store.mergePeople(bus, body.person_ids));
-  });
-
-  app.post('/people/:id/name', async (context) => {
-    const body = await context.req.json<NamePersonRequest>();
-    const person = await store.namePerson(context.req.param('id'), body.name, body.relationship);
-    if (!person) return context.json({ error: 'person not found' }, 404);
-    bus.emit({
-      type: 'identity',
-      conversation_id: context.req.query('conversation_id') ?? '',
-      person_id: person._id,
-      name: person.name,
-      utterance_ids: [],
-    });
-    return context.json(person);
-  });
+  // `POST /people/merge` and `POST /people/:id/name` are registered by
+  // server/identity/index.ts, which is the single implementation of both.
+  //
+  // This lane used to register its own copies on the same two paths. They never
+  // ran — server/index.ts registers identity first and Hono takes the first
+  // handler — but they disagreed on real behaviour, so which one you read
+  // determined what you believed the endpoint did. Renaming here emitted a
+  // relabel with an empty `utterance_ids`, which tells the app nothing about
+  // which lines to re-render.
 
   app.get('/conversations', async (context) => context.json(await store.listConversations()));
 

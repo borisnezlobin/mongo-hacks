@@ -34,27 +34,12 @@ export async function listPeople(): Promise<Person[]> {
   return collections.people().find({ owner_id: OWNER_ID }).sort({ name: 1 }).toArray();
 }
 
-export async function createUnnamedPerson(): Promise<Person> {
-  const timestamp = nowIso();
-  const person: Person = {
-    _id: id('person'),
-    owner_id: OWNER_ID,
-    name: '',
-    created_at: timestamp,
-    updated_at: timestamp,
-  };
-  await collections.people().insertOne(person);
-  return person;
-}
-
-export async function namePerson(personId: Id, name: string, relationship?: string): Promise<Person | null> {
-  const updated = await collections.people().findOneAndUpdate(
-    { _id: personId, owner_id: OWNER_ID },
-    { $set: { name, ...(relationship ? { relationship } : {}), updated_at: nowIso() } },
-    { returnDocument: 'after' },
-  );
-  return updated ?? null;
-}
+// People are created and renamed by Lane A, in server/identity/service.ts —
+// that is where a person and their first voiceprint are written together, which
+// is the only moment either makes sense on its own. `createUnnamedPerson` here
+// had no callers and seeded `name: ''` where identity writes `'Unknown'`, so the
+// two would have disagreed about what an unnamed person looks like the moment
+// anything called it.
 
 /**
  * The current value of an attribute for a person. Supersession chains are
@@ -311,47 +296,6 @@ export async function upsertUtterance(utterance: Omit<Utterance, 'created_at' | 
   );
 }
 
-/**
- * Merge keeps the oldest person and re-points every reference. Voiceprints are
- * never deleted — a wrong merge stays recoverable because the vectors survive.
- */
-export async function mergePeople(bus: AmeliaBus, personIds: Id[]): Promise<Person> {
-  const people = await collections
-    .people()
-    .find({ _id: { $in: personIds }, owner_id: OWNER_ID })
-    .sort({ created_at: 1 })
-    .toArray();
-  if (people.length < 2) throw new Error('merge requires at least two existing people');
-
-  const [survivor, ...absorbed] = people;
-  const absorbedIds = absorbed.map((person) => person._id);
-  const filter = { owner_id: OWNER_ID, person_id: { $in: absorbedIds } };
-
-  const conversationIds = await collections.utterances().distinct('conversation_id', filter);
-  await collections.voiceprints().updateMany(filter, { $set: { person_id: survivor._id } });
-  await collections.utterances().updateMany(filter, { $set: { person_id: survivor._id } });
-  await collections.facts().updateMany(filter, { $set: { person_id: survivor._id } });
-  await collections.promises().updateMany(filter, { $set: { person_id: survivor._id } });
-
-  const name = survivor.name || absorbed.find((person) => person.name)?.name || '';
-  const merged = await collections.people().findOneAndUpdate(
-    { _id: survivor._id },
-    { $set: { name, updated_at: nowIso() } },
-    { returnDocument: 'after' },
-  );
-  await collections.people().deleteMany({ _id: { $in: absorbedIds }, owner_id: OWNER_ID });
-
-  for (const conversationId of conversationIds) {
-    const utteranceIds = await collections
-      .utterances()
-      .distinct('_id', { owner_id: OWNER_ID, conversation_id: conversationId, person_id: survivor._id });
-    bus.emit({
-      type: 'identity',
-      conversation_id: conversationId,
-      person_id: survivor._id,
-      name,
-      utterance_ids: utteranceIds,
-    });
-  }
-  return merged ?? survivor;
-}
+// Merge lives in server/identity/service.ts. It keeps the oldest person and
+// re-points every reference; voiceprints are never deleted, so a wrong merge
+// stays recoverable because the vectors survive.

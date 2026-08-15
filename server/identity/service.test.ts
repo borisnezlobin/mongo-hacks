@@ -595,6 +595,41 @@ describe('identity service', () => {
     });
   });
 
+  // The common merge is "this Unknown is actually Maya", and the Unknown is the
+  // older row — it was created the first time the voice was heard. Keeping the
+  // oldest record's name verbatim would throw away the only name a human ever
+  // typed and leave the merged person called Unknown.
+  it('keeps the oldest record but carries a real name forward', async () => {
+    const harness = createHarness({
+      people: [
+        {
+          _id: 'person-unknown',
+          owner_id: OWNER_ID,
+          name: 'Unknown',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'person-maya',
+          owner_id: OWNER_ID,
+          name: 'Maya',
+          created_at: '2026-01-05T00:00:00.000Z',
+          updated_at: '2026-01-05T00:00:00.000Z',
+        },
+      ],
+    });
+
+    const survivor = await harness.service.mergePeople({
+      person_ids: ['person-unknown', 'person-maya'],
+    });
+
+    expect(survivor._id).toBe('person-unknown');
+    expect(survivor.name).toBe('Maya');
+    // The rename is persisted, not only returned.
+    expect(harness.people.documents).toHaveLength(1);
+    expect(harness.people.documents[0]).toMatchObject({ _id: 'person-unknown', name: 'Maya' });
+  });
+
   it('merges into the oldest person and preserves every voiceprint', async () => {
     const harness = createHarness({
       people: [
