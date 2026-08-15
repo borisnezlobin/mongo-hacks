@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Fact, Person, PromiseMemory, Utterance, Voiceprint } from '../../shared/contracts';
-import { EMBED_MIN_MS, OWNER_ID, VOICEPRINT_DIMS } from '../../shared/contracts';
+import {
+  ATTRIBUTION_THRESHOLD,
+  EMBED_MIN_MS,
+  OWNER_AUTH_THRESHOLD,
+  OWNER_ID,
+  VOICEPRINT_DIMS,
+} from '../../shared/contracts';
 import { createIdentityService } from './service';
 
 type Filter = Record<string, unknown>;
@@ -268,6 +274,135 @@ describe('identity service', () => {
     });
   });
 
+  // Two people the search cannot separate is the failure that matters: picking
+  // the higher of two near-identical scores is a coin toss, and losing it merges
+  // one person's history into another's, silently and permanently. Holding is
+  // recoverable — the caller retries when more audio arrives.
+  it('holds attribution when two people are indistinguishable', async () => {
+    const twin = [0.8, 0.6];
+    const harness = createHarness({
+      people: [
+        {
+          _id: 'person-a',
+          owner_id: OWNER_ID,
+          name: 'Ada',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'person-b',
+          owner_id: OWNER_ID,
+          name: 'Bea',
+          created_at: '2026-01-02T00:00:00.000Z',
+          updated_at: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+      voiceprints: [
+        {
+          _id: 'voiceprint-a',
+          owner_id: OWNER_ID,
+          person_id: 'person-a',
+          embedding: twin,
+          duration_ms: 4_000,
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'voiceprint-b',
+          owner_id: OWNER_ID,
+          person_id: 'person-b',
+          embedding: twin,
+          duration_ms: 4_000,
+          created_at: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+      utterances: [{
+        _id: 'utterance-twin',
+        owner_id: OWNER_ID,
+        conversation_id: 'conversation-twin',
+        text: 'Which of us is it',
+        start_ms: 0,
+        end_ms: 4_000,
+        is_final: true,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [1, 0],
+      duration_ms: EMBED_MIN_MS,
+      conversation_id: 'conversation-twin',
+      utterance_ids: ['utterance-twin'],
+    });
+
+    // Both clear the raw threshold at 0.8, so the old rule would have matched
+    // whichever the vector search happened to rank first.
+    expect(result).toEqual({ status: 'pending', reason: 'ambiguous' });
+    // Holding means holding: no third person invented, and nothing written.
+    expect(harness.people.documents).toHaveLength(2);
+    expect(harness.utterances.documents[0].person_id).toBeUndefined();
+    expect(harness.emit).not.toHaveBeenCalled();
+  });
+
+  it('still attributes when the leader clearly beats the runner-up', async () => {
+    const harness = createHarness({
+      people: [
+        {
+          _id: 'person-near',
+          owner_id: OWNER_ID,
+          name: 'Near',
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'person-far',
+          owner_id: OWNER_ID,
+          name: 'Far',
+          created_at: '2026-01-02T00:00:00.000Z',
+          updated_at: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+      voiceprints: [
+        {
+          _id: 'voiceprint-near',
+          owner_id: OWNER_ID,
+          person_id: 'person-near',
+          embedding: [0.8, 0.6],
+          duration_ms: 4_000,
+          created_at: '2026-01-01T00:00:00.000Z',
+        },
+        {
+          _id: 'voiceprint-far',
+          owner_id: OWNER_ID,
+          person_id: 'person-far',
+          embedding: [0.1, Math.sqrt(1 - 0.01)],
+          duration_ms: 4_000,
+          created_at: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+      utterances: [{
+        _id: 'utterance-clear',
+        owner_id: OWNER_ID,
+        conversation_id: 'conversation-clear',
+        text: 'Unmistakably me',
+        start_ms: 0,
+        end_ms: 4_000,
+        is_final: true,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [1, 0],
+      duration_ms: EMBED_MIN_MS,
+      conversation_id: 'conversation-clear',
+      utterance_ids: ['utterance-clear'],
+    });
+
+    expect(result).toMatchObject({ status: 'matched', person_id: 'person-near' });
+  });
+
   it('creates an unknown person and voiceprint for a new voice', async () => {
     const harness = createHarness({
       utterances: [{
@@ -342,14 +477,26 @@ describe('identity service', () => {
       }],
     });
 
-    await expect(harness.service.isOwnerVoice([0.6, 0.8])).resolves.toEqual({
-      authorized: true,
-      confidence: 0.6,
-    });
-    await expect(harness.service.isOwnerVoice([0.59, 0.8074])).resolves.toEqual({
-      authorized: false,
-      confidence: 0.59,
-    });
+    // The stored print is [1, 0], so a unit query [c, √(1-c²)] has cosine c
+    // exactly — the test tracks the constant instead of restating a number that
+    // was true on the day it was written.
+    const atCosine = (cosine: number) => [cosine, Math.sqrt(1 - cosine ** 2)];
+
+    const above = await harness.service.isOwnerVoice(atCosine(OWNER_AUTH_THRESHOLD + 0.01));
+    expect(above.authorized).toBe(true);
+
+    const below = await harness.service.isOwnerVoice(atCosine(OWNER_AUTH_THRESHOLD - 0.01));
+    expect(below.authorized).toBe(false);
+    expect(below.confidence).toBeCloseTo(OWNER_AUTH_THRESHOLD - 0.01, 6);
+  });
+
+  // The regression this guards is a real one: PLAN.md paired 0.75 attribution
+  // with 0.60 owner auth and called owner auth the loose gate. Attribution later
+  // dropped to 0.6 and the gap silently closed. Owner auth is the write path —
+  // it authorizes the agent to edit the owner's memory — so it must stay the
+  // stricter of the two, not merely different.
+  it('gates owner authorization more strictly than speaker attribution', () => {
+    expect(OWNER_AUTH_THRESHOLD).toBeGreaterThan(ATTRIBUTION_THRESHOLD);
   });
 
   it('rejects owner authorization when no owner is enrolled', async () => {

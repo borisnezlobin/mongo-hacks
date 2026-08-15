@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { MongoClient } from 'mongodb';
 import type { DebugUtteranceRequest, Person, Utterance, UtteranceEvent, Voiceprint } from '../shared/contracts';
-import { OWNER_AUTH_THRESHOLD, OWNER_ID } from '../shared/contracts';
+import { OWNER_ID } from '../shared/contracts';
 import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
 import { registerGlassesRoutes, startGlassesServer } from './glasses';
@@ -68,9 +68,10 @@ export function createApp() {
   });
 
   // Voice "Hey Amelia" needs Lane A's confidence that the speaker is the owner.
-  // Lane A already resolved person_id on the utterance, but the wake gate is the
-  // LOOSE threshold (OWNER_AUTH_THRESHOLD), not the strict attribution threshold —
-  // so we re-score the stored voiceprint against the owner's voiceprints directly.
+  // Lane A already resolved person_id on the utterance, but the wake gate is a
+  // different threshold from attribution (OWNER_AUTH_THRESHOLD, the stricter one,
+  // because a summon authorizes writes) — so we re-score the stored voiceprint
+  // against the owner's voiceprints directly.
   const ownerConfidenceFor = createOwnerConfidenceLookup();
 
   registerAudioRoutes(app, deps);
