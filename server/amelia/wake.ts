@@ -1,4 +1,5 @@
-import { OWNER_AUTH_THRESHOLD, type Id, type UtteranceEvent } from '../../shared/contracts';
+import { type Id, type UtteranceEvent } from '../../shared/contracts';
+import { ownerAuthThreshold } from '../lib/thresholds';
 
 /**
  * The owner's PERSON id — not `OWNER_ID` from contracts.
@@ -34,8 +35,9 @@ export interface WakeMatch {
  *
  * Two gates, both required:
  *   1. the turn contains the wake phrase
- *   2. the speaker is the owner at OWNER_AUTH_THRESHOLD — the LOOSE threshold.
- *      Strict attribution (ATTRIBUTION_THRESHOLD) is Lane A's and is not used here.
+ *   2. the speaker is the owner at OWNER_AUTH_THRESHOLD — the STRICTER of the
+ *      two thresholds, because a summon authorizes writes. Attribution
+ *      (ATTRIBUTION_THRESHOLD) is Lane A's and is not used here.
  *
  * `ownerConfidence` comes from Lane A's identity pass. Undefined ⇒ we fail
  * CLOSED: an unauthenticated wake is not a summon. The press-and-hold route is
@@ -49,7 +51,7 @@ export function detectWake(
   if (!u.is_final) return null;
   if (normalize(u.text).indexOf(WAKE_PHRASE) === -1) return null;
   if (u.person_id !== ownerPersonId) return null;
-  if (ownerConfidence === undefined || ownerConfidence < OWNER_AUTH_THRESHOLD) return null;
+  if (ownerConfidence === undefined || ownerConfidence < ownerAuthThreshold()) return null;
 
   // Command = wake phrase → end of turn. Slice the ORIGINAL text so casing and
   // punctuation survive into the prompt.

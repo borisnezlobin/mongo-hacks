@@ -67,7 +67,8 @@ finalized utterances.
 
 ```
 utterance (bus, is_final)
-  └─ detectWake: "hey amelia" + person_id === OWNER_ID + confidence ≥ OWNER_AUTH_THRESHOLD
+  └─ detectWake: "hey amelia" + person_id === OWNER_ID + confidence ≥ ownerAuthThreshold()
+       (server/lib/thresholds.ts — stricter than attribution; a summon authorizes writes)
        └─ runAmelia: tool-use loop, capped at AMELIA_MAX_TOOL_CALLS
             ├─ amelia_step per turn  → Lane C renders inline
             └─ final text → ElevenLabs → amelia_audio → phone plays

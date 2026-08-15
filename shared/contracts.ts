@@ -4,7 +4,13 @@ export const EMBED_MIN_MS = 3_000;
 // 0.758 and cross-speaker peaked at 0.259, so 0.75 left almost no margin
 // before a speaker split in two. 0.6 keeps distance from both failure modes.
 export const ATTRIBUTION_THRESHOLD = 0.6;
-export const OWNER_AUTH_THRESHOLD = 0.6;
+// Deliberately ABOVE attribution. Owner auth is what lets a voice make Amelia
+// act, and the profile-update tools made that a write path — so the mistake it
+// guards against (a stranger editing the owner's memory) is worse than the one
+// attribution guards against. Press-and-hold is the bypass for a missed summon,
+// which is what makes failing closed here affordable. See
+// server/lib/thresholds.ts; both are env-overridable at the venue.
+export const OWNER_AUTH_THRESHOLD = 0.75;
 export const TONIGHT_DEFAULT_HOUR = 21;
 export const FAST_PASS_LOOKBACK_TURNS = 8;
 export const SLOW_PASS_EVERY_N_UTTERANCES = 25;

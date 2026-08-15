@@ -10,13 +10,14 @@ import type {
   Utterance,
   Voiceprint,
 } from '../../shared/contracts';
+import { EMBED_MIN_MS, OWNER_ID, VOICEPRINT_DIMS } from '../../shared/contracts';
+import { attributionThreshold, ownerAuthThreshold } from '../lib/thresholds';
 import {
-  ATTRIBUTION_THRESHOLD,
-  EMBED_MIN_MS,
-  OWNER_AUTH_THRESHOLD,
-  OWNER_ID,
-  VOICEPRINT_DIMS,
-} from '../../shared/contracts';
+  DEFAULT_COHORT_SIZE,
+  adaptiveSNorm,
+  cohortStats,
+  decideSpeaker,
+} from './score-norm';
 
 type Filter = Record<string, unknown>;
 type Update<T> = { $set: Partial<T> };
@@ -57,7 +58,11 @@ export interface IdentityService {
     conversation_id: string;
     utterance_ids: string[];
   }): Promise<
-    | { status: 'pending'; reason: 'below_floor' }
+    // `below_floor`: too little audio to embed at all.
+    // `ambiguous`: enough audio, a plausible candidate, but not clear enough of
+    // the runner-up to be worth the risk of merging two people. Both are
+    // retried by the caller when more audio arrives.
+    | { status: 'pending'; reason: 'below_floor' | 'ambiguous' }
     | { status: 'matched'; person_id: string; voiceprint_id: string; confidence: number }
     | { status: 'created'; person_id: string; voiceprint_id: string }
   >;
@@ -71,9 +76,91 @@ interface VoiceprintMatch extends Voiceprint {
   score: number;
 }
 
+/** A candidate carrying the raw cosine alongside the Atlas [0,1] score. */
+interface ScoredMatch extends VoiceprintMatch {
+  cosine: number;
+}
+
+/**
+ * How far, in deviations above cohort, the leader must beat the runner-up.
+ *
+ * Not fitted, and deliberately conservative — the two errors are not
+ * symmetric. Set it too high and a real match is held as `pending`, which the
+ * caller retries on the next chunk with more audio. Set it too low and two
+ * people are merged, which is silent, permanent, and only visible later as one
+ * person remembering things they never said.
+ */
+const DEFAULT_MARGIN_SIGMA = 0.75;
+
+function marginSigma(): number {
+  const raw = process.env.ATTRIBUTION_MARGIN_SIGMA;
+  if (raw === undefined || raw === '') return DEFAULT_MARGIN_SIGMA;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    console.warn(`ATTRIBUTION_MARGIN_SIGMA="${raw}" is not a number — using ${DEFAULT_MARGIN_SIGMA}`);
+    return DEFAULT_MARGIN_SIGMA;
+  }
+  return parsed;
+}
+
+/**
+ * AS-norm each live candidate against the people it is definitely not.
+ *
+ * Symmetric, so both halves are computed. The test side comes free from the
+ * search we already ran: every OTHER person's best score is, by construction, an
+ * imposter trial for this candidate. The enrolled side costs one extra vector
+ * search per candidate — the candidate's own stored voiceprint scored against
+ * everybody else — and it is the half that catches a voiceprint which sits
+ * close to the whole database. Bounded at two candidates, so at most two extra
+ * searches per speaker cluster, not per utterance.
+ *
+ * Returned in the caller's order rather than re-sorted. If normalization flips
+ * the leader and the runner-up, the margin comes out negative and the decision
+ * lands on `uncertain` — which is the honest reading of a flip, and safer than
+ * quietly attributing to whoever normalization happened to favour.
+ */
+async function normalizedScores(
+  voiceprints: VoiceprintCollection,
+  ranked: readonly ScoredMatch[],
+  live: readonly { match: ScoredMatch }[],
+): Promise<number[]> {
+  return Promise.all(
+    live.map(async ({ match }) => {
+      const testSide = cohortStats(
+        ranked.filter((other) => other.person_id !== match.person_id).map((other) => other.cosine),
+      );
+
+      const mirror = await voiceprints
+        .aggregate<VoiceprintMatch>(
+          voiceprintSearchPipeline(match.embedding, undefined, COHORT_SEARCH_LIMIT),
+        )
+        .toArray();
+      const enrolledSide = cohortStats(
+        mirror
+          .filter((other) => other.person_id !== match.person_id)
+          .map((other) => rawCosine(other.score)),
+      );
+
+      return adaptiveSNorm(match.cosine, testSide, enrolledSide);
+    }),
+  );
+}
+
+/**
+ * How many voiceprints to pull back when attributing.
+ *
+ * Three was enough when the decision was "is the nearest one above 0.6". It is
+ * not enough to normalize: AS-norm needs a cohort of people the trial is
+ * definitely NOT, and three neighbours are all plausibly the right answer.
+ * DEFAULT_COHORT_SIZE imposters plus a few rows of headroom for the candidate's
+ * own duplicate voiceprints is the smallest search that supports the decision.
+ */
+export const COHORT_SEARCH_LIMIT = DEFAULT_COHORT_SIZE + 5;
+
 export function voiceprintSearchPipeline(
   embedding: number[],
   personId?: string,
+  limit = 3,
 ): PipelineStage[] {
   return [
     {
@@ -85,8 +172,11 @@ export function voiceprintSearchPipeline(
           owner_id: OWNER_ID,
           ...(personId ? { person_id: personId } : {}),
         },
-        numCandidates: 60,
-        limit: 3,
+        // Atlas needs a candidate pool well above the requested limit or the
+        // approximate search returns a truncated, biased neighbourhood — which
+        // for a cohort means normalizing against the wrong background.
+        numCandidates: Math.max(60, limit * 12),
+        limit,
       },
     },
     {
@@ -125,10 +215,27 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
       }
 
       const matches = await collections.voiceprints
-        .aggregate<VoiceprintMatch>(voiceprintSearchPipeline(input.embedding))
+        .aggregate<VoiceprintMatch>(
+          voiceprintSearchPipeline(input.embedding, undefined, COHORT_SEARCH_LIMIT),
+        )
         .toArray();
 
-      const threshold = Number(process.env.ATTRIBUTION_THRESHOLD ?? ATTRIBUTION_THRESHOLD)
+      const threshold = attributionThreshold();
+
+      /**
+       * One score per person, not per voiceprint.
+       *
+       * Somebody enrolled five times has five rows in the index and can fill the
+       * whole result list, which makes the runner-up look absent and the cohort
+       * look like one person. The decision is about people, so collapse first.
+       */
+      const bestPerPerson = new Map<string, ScoredMatch>();
+      for (const match of matches) {
+        const cosine = rawCosine(match.score);
+        const held = bestPerPerson.get(match.person_id);
+        if (!held || cosine > held.cosine) bestPerPerson.set(match.person_id, { ...match, cosine });
+      }
+      const ranked = [...bestPerPerson.values()].sort((left, right) => right.cosine - left.cosine);
 
       /**
        * Walk the candidates rather than trusting only the nearest.
@@ -140,10 +247,9 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
        * the speaker stays nameless for the whole conversation. One stale row
        * silently disabled recognition for the person it used to belong to.
        */
-      let best: { voiceprint: VoiceprintMatch; confidence: number; person: Person } | undefined;
-      for (const match of matches) {
-        const confidence = rawCosine(match.score);
-        if (confidence < threshold) break;
+      const live: { match: ScoredMatch; person: Person }[] = [];
+      for (const match of ranked) {
+        if (live.length === 2) break;
         const candidate = await collections.people.findOne({
           _id: match.person_id,
           owner_id: OWNER_ID,
@@ -154,8 +260,59 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
           );
           continue;
         }
-        best = { voiceprint: match, confidence, person: candidate };
-        break;
+        live.push({ match, person: candidate });
+      }
+
+      const [leader, runnerUp] = live;
+      let best: { voiceprint: VoiceprintMatch; confidence: number; person: Person } | undefined;
+
+      if (leader && leader.match.cosine >= threshold) {
+        /**
+         * The raw cosine still owns "is anybody in the database plausible" —
+         * AS-norm is only allowed to TIGHTEN that answer, never to loosen it.
+         *
+         * The reason is that the sigma thresholds are not fitted. Nothing in
+         * this repo measures the open-set decision: every eval speaker is
+         * enrolled, there is no held-out imposter, so the harness cannot tell a
+         * correct rejection from an error and would reward any threshold that
+         * accepts more. Replacing one unfitted constant with three would be
+         * motion, not progress.
+         *
+         * What does NOT need fitting is the relative part. When two people both
+         * score well, picking the higher of two near-identical scores is a coin
+         * toss, and losing it merges one person's history into another's. The
+         * margin is measured in deviations above each candidate's own cohort,
+         * so it also catches the grabby voiceprint that sits close to everybody
+         * — the mechanism by which one person slowly swallows the database.
+         *
+         * A rejected margin returns `pending`, not a new person. The caller
+         * already retries with more audio, which is the honest response to
+         * ambiguity: a stranger is a new person, a friend heard poorly is a
+         * reason to wait.
+         */
+        const decision = decideSpeaker(
+          await normalizedScores(collections.voiceprints, ranked, live),
+          {
+            accept: Number.NEGATIVE_INFINITY,
+            reject: Number.NEGATIVE_INFINITY,
+            margin: marginSigma(),
+          },
+        );
+
+        if (decision.kind !== 'match') {
+          console.warn(
+            `attribution held: ${leader.person._id} scored ${leader.match.cosine.toFixed(3)} raw ` +
+              `but only ${decision.kind === 'uncertain' ? decision.margin.toFixed(2) : '?'}σ clear of ` +
+              `${runnerUp?.person._id ?? 'nobody'}`,
+          );
+          return { status: 'pending', reason: 'ambiguous' };
+        }
+
+        best = {
+          voiceprint: leader.match,
+          confidence: leader.match.cosine,
+          person: leader.person,
+        };
       }
 
       if (best) {
@@ -234,7 +391,7 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
       if (!match) return { authorized: false, confidence: 0 };
 
       const confidence = rawCosine(match.score);
-      return { authorized: confidence >= OWNER_AUTH_THRESHOLD, confidence };
+      return { authorized: confidence >= ownerAuthThreshold(), confidence };
     },
     async enroll(request) {
       if (!request.embedding || request.embedding.length !== VOICEPRINT_DIMS) {
