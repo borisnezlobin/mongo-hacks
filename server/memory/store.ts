@@ -3,6 +3,7 @@ import { OWNER_ID } from '../../shared/contracts';
 import type {
   Conversation,
   Fact,
+  FactState,
   Id,
   Person,
   PromiseMemory,
@@ -42,16 +43,54 @@ export async function listPeople(): Promise<Person[]> {
 // anything called it.
 
 /**
- * The current value of an attribute for a person. Supersession chains are
- * append-only, so "current" is the single row nothing has replaced yet.
+ * The current value of an attribute, plus the chain it replaced.
+ *
+ * Supersession is append-only, so "current" is the single row nothing has
+ * replaced yet. The history behind it is reachable only backwards:
+ * `superseded_by` points old → new, so the current fact holds no reference to
+ * its own past and the chain has to be walked in reverse.
+ *
+ * One query rather than a walk of N. Every row for the attribute is small and
+ * already indexed by `facts_current_by_attribute`, so pulling the set and
+ * linking it in memory costs one round trip instead of one per generation.
  */
-export async function resolveFactState(personId: Id, attribute: string): Promise<Fact | null> {
-  return collections
+export async function resolveFactState(personId: Id, attribute: string): Promise<FactState> {
+  const rows = await collections
     .facts()
-    .findOne(
-      { owner_id: OWNER_ID, person_id: personId, attribute: { $in: factAttributeAliases(attribute) }, ...NOT_SUPERSEDED },
-      { sort: { valid_from: -1 } },
-    );
+    .find({ owner_id: OWNER_ID, person_id: personId, attribute: { $in: factAttributeAliases(attribute) } })
+    .sort({ valid_from: -1 })
+    .toArray();
+
+  // Rows are newest-first, so the first unsuperseded one is the live claim.
+  // More than one would mean coexisting claims on the attribute, which the slow
+  // pass allows; the newest is still the answer to "what is it now".
+  const current = rows.find((fact) => fact.superseded_by === null || fact.superseded_by === undefined) ?? null;
+  if (!current) return { current: null, superseded: [] };
+
+  const predecessors = new Map<Id, Fact>();
+  for (const fact of rows) {
+    // Newest-first means the first writer wins, so a claim replaced by two rows
+    // (which shouldn't happen, but adjudication is a model call) resolves to the
+    // most recent of them rather than an arbitrary one.
+    if (fact.superseded_by && !predecessors.has(fact.superseded_by)) {
+      predecessors.set(fact.superseded_by, fact);
+    }
+  }
+
+  const chain: Fact[] = [];
+  const visited = new Set<Id>([current._id]);
+  let cursor = current;
+  for (;;) {
+    const previous = predecessors.get(cursor._id);
+    // A cycle cannot happen in correct data, but it would hang the request if
+    // it did, and a hung Amelia turn is worse than a truncated history.
+    if (!previous || visited.has(previous._id)) break;
+    chain.push(previous);
+    visited.add(previous._id);
+    cursor = previous;
+  }
+
+  return { current, superseded: chain.reverse() };
 }
 
 export async function listCurrentFacts(personId?: Id): Promise<Fact[]> {

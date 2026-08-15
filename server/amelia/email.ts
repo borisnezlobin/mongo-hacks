@@ -34,7 +34,7 @@ export async function draftEmail(
   const personId = person?._id ?? toPersonId;
 
   // The address comes from memory, never from the model — no invented recipients.
-  const emailFact = await memory.resolveFactState(personId, 'email').catch(() => null);
+  const emailFact = (await memory.resolveFactState(personId, 'email').catch(() => null))?.current;
 
   const draft: EmailDraft = {
     draft_id: `draft_${++seq}`,

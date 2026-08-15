@@ -196,10 +196,22 @@ export function createFixtureMemory(): FixtureMemory {
       const person =
         PEOPLE.find((p) => p._id === personId || p.name.toLowerCase() === personId.toLowerCase())
           ?._id ?? personId;
-      // Contract shape: the CURRENT fact only. The superseded chain is
-      // deliberately unreachable — see TODO(contracts) in tools.ts.
       const attributes = attribute === 'move' ? ['move', 'move_date'] : [attribute];
-      return FACTS.find((f) => f.person_id === person && attributes.includes(f.attribute) && !f.superseded_by) ?? null;
+      const mine = FACTS.filter((f) => f.person_id === person && attributes.includes(f.attribute));
+      const current = mine.find((f) => !f.superseded_by) ?? null;
+      if (!current) return { current: null, superseded: [] };
+
+      // Same backward walk as the store, on the fixture's own rows, so the
+      // fixture exercises the chain rather than asserting an empty one.
+      const chain: Fact[] = [];
+      let cursor = current;
+      for (;;) {
+        const previous = mine.find((f) => f.superseded_by === cursor._id);
+        if (!previous || chain.includes(previous)) break;
+        chain.push(previous);
+        cursor = previous;
+      }
+      return { current, superseded: chain.reverse() };
     },
 
     async createReminder(promiseId: Id, fireAt: Timestamp): Promise<Reminder> {

@@ -15,18 +15,9 @@ Three changes here affect other lanes.
 Claude Opus 5, `output_config`, and adaptive thinking, so Lane D cannot run on
 it. No other lane's code depends on the old version.
 
-### 2. `resolveFactState` cannot reach the supersession chain
+### 2. `resolveFactState` reaches the supersession chain — resolved
 
-`MemoryApi.resolveFactState` returns `Promise<Fact | null>` — the current fact
-only. `Fact.superseded_by` points **forward** (old → new), so the current fact
-has it unset and there is no back-pointer to what it replaced.
-
-Lane D's step stream is supposed to read the real chain and say
-`move in date updated Aug 15 → Aug 20`. It cannot, so that step currently
-degrades to `move in date: Aug 20` — true, but it stops being the moment that
-sells supersession, and it is the video's 20–32s beat.
-
-Smallest fix that leaves Lane B's internals alone:
+`MemoryApi.resolveFactState` now returns `FactState`:
 
 ```ts
 resolveFactState(personId: Id, attribute: string): Promise<{
@@ -35,8 +26,15 @@ resolveFactState(personId: Id, attribute: string): Promise<{
 }>
 ```
 
-Marked `TODO(contracts)` in `tools.ts`. Lane C is unaffected — `FactEvent`
-already carries `superseded_fact_id`.
+`Fact.superseded_by` still points **forward** (old → new), so the chain is
+walked backwards inside `server/memory/store.ts` — one query for the attribute's
+rows, then linked in memory — rather than by adding a back-pointer to the
+schema. Callers take `.current` where they used to take the fact.
+
+The step trace renders `move updated <old> → <new>` when there is history and
+falls back to `move: <value>` when there is not. Covered by
+`server/amelia/tools.test.ts`. Lane C is unaffected — `FactEvent` already
+carries `superseded_fact_id`.
 
 ### 3. `POST /amelia/summon` is not in `ApiContract`
 

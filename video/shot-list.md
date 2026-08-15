@@ -58,10 +58,11 @@ changed, and what still needs to happen."
 - The 20–32s supersession beat depends on the live-context intervention
   (AMELIA_LIVE_CONTEXT on by default). Confirm the cooldown has elapsed before
   the take or the chime is swallowed.
-- Known limitation to shoot around: the step trace shows the current value
-  ("September 15th"), not the old→new arrow, until MemoryApi.resolveFactState
-  exposes the supersession chain (TODO(contracts) in tools.ts). The fact card on
-  screen carries the strike-through, so frame the phone for that beat.
+- The step trace now shows the old→new arrow itself ("move updated Moving to
+  Oakland on September 1 → ... September 15"), since MemoryApi.resolveFactState
+  returns the supersession chain. The fact card still carries the strike-through,
+  so the beat reads on both the trace and the card — frame for whichever is
+  cleaner on the day.
 
 ## Capture commands
 

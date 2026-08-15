@@ -62,7 +62,7 @@ describe('per-turn fact reconciliation', () => {
     mocks.utterances = [turn];
     mocks.getPerson.mockResolvedValue({ name: 'Maya' });
     mocks.findFactBySourceClaim.mockResolvedValue(null);
-    mocks.resolveFactState.mockResolvedValue(current);
+    mocks.resolveFactState.mockResolvedValue({ current, superseded: [] });
     mocks.utteranceFindOne.mockImplementation(async ({ _id }: { _id: string }) => (
       _id === turn._id ? turn : { ...turn, _id: 'u-old', start_ms: 0, end_ms: 500 }
     ));

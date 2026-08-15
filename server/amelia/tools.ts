@@ -143,15 +143,27 @@ export async function runTool(
       }
 
       case 'resolve_fact_state': {
-        const fact = await memory.resolveFactState(input.person_id, input.attribute);
+        const { current, superseded } = await memory.resolveFactState(
+          input.person_id,
+          input.attribute,
+        );
         const attribute = String(input.attribute).replace(/_/g, ' ');
-        // TODO(contracts): MemoryApi.resolveFactState returns only the current
-        // Fact, and Fact.superseded_by points FORWARD (old → new), so the
-        // supersession chain is unreachable from here. Until Lane B returns
-        // `{current, superseded[]}`, this message can only state the current
-        // value — it cannot render "Aug 15 → Aug 20", which is the video's
-        // 20–32s beat. Raised with the contracts owner.
-        if (fact) return { result: fact, message: `${attribute}: ${fact.claim}` };
+
+        if (current) {
+          // The arrow IS the feature. A fact store that only ever reports the
+          // latest value is a database with an UPDATE statement; showing what
+          // the claim replaced is what makes append-only visible, and it is the
+          // difference between "move date: Aug 20" and "Aug 15 → Aug 20".
+          //
+          // Only the immediately previous claim goes in the step line — the
+          // full chain is in `result` for the model to reason over, but a step
+          // is one line on a phone screen and older generations are noise.
+          const previous = superseded.at(-1);
+          const message = previous
+            ? `${attribute} updated ${previous.claim} → ${current.claim}`
+            : `${attribute}: ${current.claim}`;
+          return { result: { current, superseded }, message };
+        }
 
         // A miss used to send the model hunting through attribute-name variants
         // ("move date", "move in date", "oakland move date"), burning the whole

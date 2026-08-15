@@ -135,7 +135,7 @@ Lane D may call only Lane B's exported memory surface:
 
 - `searchMemory(query, personId?)`
 - `getPerson(id)`
-- `resolveFactState(personId, attribute)`
+- `resolveFactState(personId, attribute)` — returns `{current, superseded[]}`, not a bare `Fact`
 - `createReminder(promiseId, fireAt)`
 - `addNote(personId, text)`
 
