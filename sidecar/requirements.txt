@@ -1,7 +1,25 @@
-torch
-torchaudio
-speechbrain
-fastapi
-uvicorn
-numpy
-soundfile
+# Bounds, not a lock.
+#
+# The thing that actually has to be reproducible is the embedding space: a
+# stored voiceprint and a freshly computed one are only comparable if the same
+# weights produced both. That is pinned where it belongs — MODEL_REVISION in
+# app.py names an exact model commit rather than tracking `main`.
+#
+# These bounds cover the second-order risk, which is library drift moving the
+# numerics under fixed weights. To turn them into a real lock, run
+# `pip freeze > requirements.lock.txt` from a working environment and install
+# from that; nobody has produced one yet because the sidecar has only ever been
+# installed by hand.
+
+# >=1.0 is a hard requirement, not a preference: `speechbrain.inference.speaker`
+# is the post-1.0 module path, and `from_hparams(revision=...)` — which is what
+# pins the model commit — does not exist before it.
+speechbrain>=1.0,<2
+
+torch>=2.0,<3
+torchaudio>=2.0,<3
+numpy>=1.24,<3
+
+fastapi>=0.110,<1
+uvicorn>=0.27,<1
+soundfile>=0.12,<1

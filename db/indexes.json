@@ -75,6 +75,11 @@
     },
     {
       "collection": "utterances",
+      "keys": {"owner_id": 1, "person_id": 1},
+      "options": {"name": "utterances_by_person"}
+    },
+    {
+      "collection": "utterances",
       "keys": {"text": "text"},
       "options": {"name": "utterances_fulltext"}
     },

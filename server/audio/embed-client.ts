@@ -47,5 +47,13 @@ async function post(path: string, pcm: Float32Array): Promise<Embedding> {
   if (body.dims !== VOICEPRINT_DIMS) {
     throw new Error(`sidecar returned ${body.dims} dims, expected ${VOICEPRINT_DIMS}`)
   }
+  // The sidecar refuses degenerate embeddings, but this process outlives any
+  // one sidecar build and a NaN that reaches Atlas is unrecoverable: it stores
+  // clean, compares false against everything, and shows up only as attribution
+  // getting quietly worse. Cheap to check on the way in, impossible to undo
+  // after the write.
+  if (!body.vector.every(Number.isFinite)) {
+    throw new Error('sidecar returned a non-finite voiceprint')
+  }
   return { vector: body.vector, duration_ms: body.duration_ms }
 }
