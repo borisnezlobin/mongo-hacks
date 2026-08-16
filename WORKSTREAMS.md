@@ -10,7 +10,7 @@ Put your name next to a stream and mirror it in your `.team/<you>.md`.
 |---|---|---|---|
 | 1 | Authentication & users | | `server/auth/`, `server/memory/store.ts`, `app/src/screens/auth.tsx` |
 | 2 | Better lookup | | `server/ask/`, `server/memory/passes.ts` |
-| 3 | Amelia voice + profile tools | | `server/amelia/tts.ts`, `server/amelia/tools.ts` |
+| 3 | Amelia voice + profile tools | tarun-yadgirkar (profile tools half; voice is unclaimed) | `server/amelia/tts.ts`, `server/amelia/tools.ts` |
 | 4 | Loops rework | | `server/loops/`, `app/src/screens/loops.tsx`, `app/src/lib/notifications.ts` |
 | 5 | UI | | `app/src/components/`, `app/src/constants/theme.ts` |
 

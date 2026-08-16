@@ -1,10 +1,20 @@
 name: tarun-yadgirkar
 status: active
-updated: 2026-08-15T23:40Z
+updated: 2026-08-15T23:50Z
 
 ## Now
 
-Speaker attribution, on the scoring side rather than the audio side.
+Driving the profile-tools half of stream 3. The voice half is still unclaimed.
+
+`set_name` and `set_birthday` are in Amelia's tool surface. Both go through the
+append-only fact path rather than beside it, so a birthday corrected out loud
+supersedes like every other fact and `resolve_fact_state` reads back the current
+one — `birthday` is in that tool's controlled vocabulary now, which it had to be
+or the write would have been unreachable. Both refuse an unresolved person
+rather than writing a fact nobody can reach or renaming nobody and reporting
+success.
+
+Before that: speaker attribution, on the scoring side rather than the audio side.
 
 Landed `server/identity/score-norm.ts`: adaptive score normalization (AS-norm)
 plus logistic calibration, EER, and a three-way speaker decision. Not wired into
@@ -28,6 +38,40 @@ works on the failure it targets, and it is **not** a claim about ECAPA. Pass
 
 ## Heads up
 
+- **`shared/contracts.ts` changed — re-pull before you build against MemoryApi.**
+  It gained `setFact(personId, attribute, claim)` and `namePerson(personId,
+  name, relationship?)`, landed as their own commit ahead of the tools that call
+  them. Anything implementing MemoryApi has to implement both; the two in the
+  tree (`server/memory/index.ts` and `server/amelia/fixture-memory.ts`) already
+  do. `setFact` is deliberately not a general-purpose writer — the attribute has
+  to be one `resolve_fact_state` can read back, or you have written something
+  unreachable.
+- **`store.setFact` has no test and cannot get one here.** It needs Mongo, and
+  `db.ts` throws on first access without `MONGODB_URI`, so there is no harness
+  in this repo to hang it on. Everything asserted about supersession — create,
+  supersede, the same-value no-op, the A→B→A revert — is asserted against
+  `fixture-memory.ts`, which I made match the implementation deliberately and
+  which is therefore not independent evidence that the implementation is right.
+  The supersession chain in Mongo is unverified. Worth an integration harness
+  (mongodb-memory-server, or a suite gated on a real URI) before trusting it,
+  and that gap is not specific to setFact — nothing in `server/memory/store.ts`
+  is covered today.
+- **`set_birthday` takes an id, not a name, and the double is more forgiving
+  than production.** `fixture-memory`'s `getPerson` matches on `_id` or a
+  case-insensitive name; `store.getPerson` queries `_id` only. So passing
+  "Maya" works in tests and returns an error against the real store. That is
+  the intended production behaviour — the tool description says an id — but do
+  not read the passing test as proof a name works.
+- **Two of Amelia's tools now WRITE.** Everything before this only read. The
+  only thing between a stranger's voice and a write is the wake gate, which
+  admits the owner at `OWNER_AUTH_THRESHOLD` — described in `wake.ts` as
+  deliberately the looser threshold, and currently the same 0.6 as ordinary
+  attribution. `PLAN.md:70` had them at 0.75/0.60 before attribution dropped and
+  closed the gap. It is also the one threshold with no env override, so it
+  cannot be tightened at a venue. I have not changed it — that is stream 1's
+  call and it wants a decision rather than a quiet edit — but it should be
+  stricter than attribution, not looser, now that acting as the owner can change
+  what a person is.
 - **`bun run test` was lying if you had a worktree.** There was no vitest
   config, and vitest's defaults exclude `node_modules` and `dist` but know
   nothing about `.claude/worktrees/`, where agent worktrees put a second full

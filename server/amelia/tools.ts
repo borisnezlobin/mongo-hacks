@@ -1,8 +1,15 @@
 /**
  * Amelia's tool surface.
  *
- * Five tools bind to Lane B's frozen MemoryApi; `draft_email` is Lane D's own.
+ * Seven tools bind to Lane B's frozen MemoryApi; `draft_email` is Lane D's own.
  * Lane D never writes Lane B's collections directly.
+ *
+ * `set_name` and `set_birthday` are the only two that change anything a person
+ * is, and they arrive over a voice channel. What stands between a stranger and
+ * a write is the wake gate in wake.ts, which admits the owner at
+ * OWNER_AUTH_THRESHOLD — deliberately the LOOSER of the two thresholds, and
+ * currently the same 0.6 as ordinary attribution. That was defensible when
+ * every tool only read. It is worth revisiting now that two of them do not.
  */
 
 import { TONIGHT_DEFAULT_HOUR, type MemoryApi } from '../../shared/contracts';
@@ -48,7 +55,7 @@ export const TOOLS: ToolSpec[] = [
       'have changed over time — a date, an address, a plan — before acting on it, because ' +
       'a search hit may be a value the person has since revised.\n' +
       'Attributes are SHORT SINGLE WORDS from a small controlled vocabulary, currently: ' +
-      'move, job, name, preference, project, email. Use one of those exactly. ' +
+      'move, job, name, preference, project, email, birthday. Use one of those exactly. ' +
       'Multi-word guesses like "move_date" or "move in date" do not exist and will return ' +
       'nothing. If the attribute you want is not in that list, do not guess variations — ' +
       'answer from the search results instead.',
@@ -62,6 +69,44 @@ export const TOOLS: ToolSpec[] = [
         },
       },
       required: ['person_id', 'attribute'],
+    },
+  },
+  {
+    name: 'set_name',
+    description:
+      'Give a person a name, or correct the name they already have. Call this when the owner ' +
+      'says who somebody is — "that one is Tarun", "her name is Maya, not Maia". ' +
+      'Resolve the person first with get_person or search_memory and pass their id. Never ' +
+      'guess which person is meant: naming the wrong one re-files everything that person ever ' +
+      'said under somebody else, and there is no way to undo it from here.',
+    parameters: {
+      type: 'object',
+      properties: {
+        person_id: { type: 'string', description: 'The person to name. An id, not a name.' },
+        name: { type: 'string', description: 'What to call them, spelled the way it was said.' },
+        relationship: {
+          type: 'string',
+          description: 'Optional, only when stated — "my roommate", "lab partner".',
+        },
+      },
+      required: ['person_id', 'name'],
+    },
+  },
+  {
+    name: 'set_birthday',
+    description:
+      "Record or correct someone's birthday when it is said out loud — \"I'm Tarun and my " +
+      'birthday is July fifteenth". Resolve the person first and pass their id. ' +
+      'Pass the date as it was spoken; do not add a year nobody said, and do not convert it ' +
+      'to a format of your own. The previous value is kept and superseded automatically, so ' +
+      'correcting a birthday is safe and does not lose what it was before.',
+    parameters: {
+      type: 'object',
+      properties: {
+        person_id: { type: 'string', description: 'The person whose birthday this is.' },
+        birthday: { type: 'string', description: 'The date as spoken, e.g. "July 15" or "15 July 1986".' },
+      },
+      required: ['person_id', 'birthday'],
     },
   },
   {
@@ -162,7 +207,7 @@ export async function runTool(
             found: false,
             attribute: input.attribute,
             hint:
-              'No such attribute. Attributes are short single words (move, job, name, ' +
+              'No such attribute. Attributes are short single words (move, job, name, birthday, ' +
               'preference, project, email). Do not try variations of this name — use the ' +
               'search results you already have.',
           },
@@ -185,6 +230,35 @@ export async function runTool(
       case 'create_reminder': {
         const reminder = await memory.createReminder(input.promise_id, input.fire_at);
         return { result: reminder, message: `Reminder set for ${reminder.fire_at}` };
+      }
+
+      case 'set_name': {
+        const person = await memory.namePerson(input.person_id, input.name, input.relationship);
+        // A rename of somebody who is not there is a silent no-op otherwise,
+        // and the model would go on to speak as though it had worked.
+        if (!person) {
+          return {
+            result: { error: 'no such person', person_id: input.person_id },
+            message: `No person matching "${input.person_id}"`,
+            isError: true,
+          };
+        }
+        return { result: person, message: `Named ${person.name}` };
+      }
+
+      case 'set_birthday': {
+        // Facts carry a person_id but nothing enforces that it points at a live
+        // person, so an unresolved id would write a fact nobody can ever reach.
+        const subject = await memory.getPerson(input.person_id);
+        if (!subject) {
+          return {
+            result: { error: 'no such person', person_id: input.person_id },
+            message: `No person matching "${input.person_id}"`,
+            isError: true,
+          };
+        }
+        const recorded = await memory.setFact(subject._id, 'birthday', input.birthday);
+        return { result: recorded, message: `${subject.name}'s birthday: ${recorded.claim}` };
       }
 
       case 'add_note': {
