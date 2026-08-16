@@ -17,6 +17,7 @@ import {
   OWNER_ID,
   VOICEPRINT_DIMS,
 } from '../../shared/contracts';
+import { decideSpeaker } from './score-norm';
 
 type Filter = Record<string, unknown>;
 type Update<T> = { $set: Partial<T> };
@@ -56,8 +57,9 @@ export interface IdentityService {
     duration_ms: number;
     conversation_id: string;
     utterance_ids: string[];
+    final?: boolean;
   }): Promise<
-    | { status: 'pending'; reason: 'below_floor' }
+    | { status: 'pending'; reason: 'below_floor' | 'ambiguous' }
     | { status: 'matched'; person_id: string; voiceprint_id: string; confidence: number }
     | { status: 'created'; person_id: string; voiceprint_id: string }
   >;
@@ -71,9 +73,22 @@ interface VoiceprintMatch extends Voiceprint {
   score: number;
 }
 
+const SEARCH_LIMIT = 3;
+
+/**
+ * Rows to ask for when the margin is on. The margin is a statement about the
+ * nearest OTHER person, and one person routinely owns several prints — every
+ * enrollment adds one, and a merge repoints all of the loser's onto the
+ * survivor — so a three-row window can be filled by a single person and hide
+ * the rival entirely. Deep enough that a well-enrolled person cannot crowd the
+ * runner-up out, still far inside numCandidates.
+ */
+const MARGIN_SEARCH_LIMIT = 12;
+
 export function voiceprintSearchPipeline(
   embedding: number[],
   personId?: string,
+  limit: number = SEARCH_LIMIT,
 ): PipelineStage[] {
   return [
     {
@@ -86,7 +101,7 @@ export function voiceprintSearchPipeline(
           ...(personId ? { person_id: personId } : {}),
         },
         numCandidates: 60,
-        limit: 3,
+        limit,
       },
     },
     {
@@ -104,6 +119,20 @@ export function voiceprintSearchPipeline(
   ];
 }
 
+/**
+ * `??` rescues an absent variable but not an empty one, and a copied
+ * .env.example hands us `''` for anything documented as "leave blank for the
+ * default" — which Number() turns into a silent 0. A tuning knob that reads 0
+ * because nobody typed a number is worse than no knob at all, so anything that
+ * is not a finite number means "use the default".
+ */
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 /** Atlas cosine scores are normalized to [0, 1]; contracts use raw cosine. */
 export function rawCosine(atlasScore: number): number {
   const raw = Math.max(-1, Math.min(1, atlasScore * 2 - 1));
@@ -119,16 +148,30 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
       // Tunable at the venue: the contract floor is the safe default, but a room where
       // people talk in short turns produces almost no attributions at 3s. Lower it to trade
       // voiceprint confidence for coverage.
-      const embedFloorMs = Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS)
+      const embedFloorMs = envNumber('EMBED_MIN_MS', EMBED_MIN_MS)
       if (input.duration_ms < embedFloorMs) {
         return { status: 'pending', reason: 'below_floor' };
       }
 
-      const matches = await collections.voiceprints
-        .aggregate<VoiceprintMatch>(voiceprintSearchPipeline(input.embedding))
-        .toArray();
+      const threshold = envNumber('ATTRIBUTION_THRESHOLD', ATTRIBUTION_THRESHOLD)
 
-      const threshold = Number(process.env.ATTRIBUTION_THRESHOLD ?? ATTRIBUTION_THRESHOLD)
+      const marginCosine = envNumber('IDENTITY_MARGIN_COSINE', 0);
+
+      // How deep to walk. With no margin configured the runner-up cannot change
+      // the answer, so stopping at the first live candidate keeps this path's
+      // query count identical to what it has always been. A margin makes the
+      // second DISTINCT person load-bearing, so pay for it only then.
+      const wanted = marginCosine > 0 ? 2 : 1;
+
+      const matches = await collections.voiceprints
+        .aggregate<VoiceprintMatch>(
+          voiceprintSearchPipeline(
+            input.embedding,
+            undefined,
+            marginCosine > 0 ? MARGIN_SEARCH_LIMIT : SEARCH_LIMIT,
+          ),
+        )
+        .toArray();
 
       /**
        * Walk the candidates rather than trusting only the nearest.
@@ -140,10 +183,15 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
        * the speaker stays nameless for the whole conversation. One stale row
        * silently disabled recognition for the person it used to belong to.
        */
-      let best: { voiceprint: VoiceprintMatch; confidence: number; person: Person } | undefined;
+      const survivors: { voiceprint: VoiceprintMatch; confidence: number; person: Person }[] = [];
+      const seenPeople = new Set<string>();
       for (const match of matches) {
         const confidence = rawCosine(match.score);
         if (confidence < threshold) break;
+        // One person routinely owns several voiceprints, and their own second
+        // print is not a rival. Deduping by person is what makes the margin a
+        // statement about people rather than about rows.
+        if (seenPeople.has(match.person_id)) continue;
         const candidate = await collections.people.findOne({
           _id: match.person_id,
           owner_id: OWNER_ID,
@@ -154,9 +202,24 @@ export function createIdentityService(_options: IdentityServiceOptions): Identit
           );
           continue;
         }
-        best = { voiceprint: match, confidence, person: candidate };
-        break;
+        seenPeople.add(match.person_id);
+        survivors.push({ voiceprint: match, confidence, person: candidate });
+        if (survivors.length >= wanted) break;
       }
+
+      const decision = decideSpeaker(
+        survivors.map((survivor) => survivor.confidence),
+        { accept: threshold, reject: threshold, margin: marginCosine },
+      );
+
+      // Nothing more is coming, so a coin toss beats a nameless speaker: fall
+      // through to the top candidate, which is the answer this code has always
+      // given. Waiting is only ever an improvement while more audio is arriving.
+      if (decision.kind === 'uncertain' && decision.reason === 'ambiguous' && !input.final) {
+        return { status: 'pending', reason: 'ambiguous' };
+      }
+
+      const best = decision.kind === 'new' ? undefined : survivors[0];
 
       if (best) {
         const person = best.person;

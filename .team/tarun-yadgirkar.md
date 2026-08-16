@@ -28,6 +28,28 @@ works on the failure it targets, and it is **not** a claim about ECAPA. Pass
 
 ## Heads up
 
+- **`bun run test` was lying if you had a worktree.** There was no vitest
+  config, and vitest's defaults exclude `node_modules` and `dist` but know
+  nothing about `.claude/worktrees/`, where agent worktrees put a second full
+  checkout. With one present the whole suite collected twice — I saw 369 tests
+  "pass" against a real 194, half of them from somebody else's branch at a
+  different commit. Added `vitest.config.ts` for the exclude and a `.gitignore`
+  entry, because vitest does not read `.gitignore` and git was one `git add -A`
+  away from committing an entire nested checkout. If your counts jump, that was
+  why. I left `.claude/worktrees/todo-sweep` alone — it is locked and it is
+  someone's in-flight work.
+- **Three new env vars, all off by default.** `IDENTITY_MARGIN_COSINE` (default
+  `0`) is the master switch: above 0, `attributeSpeaker` returns
+  `{status:'pending',reason:'ambiguous'}` when the two best candidates are
+  DIFFERENT people sitting closer together than the margin, instead of coin-
+  flipping between them. `ATTRIBUTION_RETRY_SPEECH_MS` (default: the effective
+  `EMBED_MIN_MS`) is how much pooled speech must accumulate before the session
+  re-attempts an ambiguous speaker — without it `maybeAttribute` would re-embed
+  on every 100 ms frame, on the ingest promise chain. `ATTRIBUTION_MAX_ATTEMPTS`
+  (default `3`) caps those retries, after which the speaker is decided the way
+  main decides today. At `IDENTITY_MARGIN_COSINE=0` nothing above is reachable
+  and behaviour is byte-identical, including the `$vectorSearch` pipeline and
+  the `people.findOne` count.
 - **The attribution numbers in this repo are about macOS system voices.** The
   eval fixture is 43s of `say` output from four voices picked for separability
   (`fixtures/generate_audio.py:11-13`), padded with exact digital silence, with

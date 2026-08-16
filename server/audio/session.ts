@@ -30,12 +30,27 @@ import type { PendingUtterance, StreamProvider } from './types'
  */
 const HOLDBACK_MS = 300
 
+/**
+ * `??` rescues an absent variable but not an empty one, and a copied
+ * .env.example hands us `''` for anything documented as "leave blank for the
+ * default" — which Number() turns into a silent 0: a retry throttle that never
+ * throttles, or an attempt budget that is spent before the first attempt.
+ * Anything that is not a finite number means "use the default".
+ */
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
 export interface AttributionService {
   attributeSpeaker(input: {
     embedding: number[]
     duration_ms: number
     conversation_id: string
     utterance_ids: string[]
+    final?: boolean
   }): Promise<
     | { status: 'pending'; reason: string }
     | { status: 'matched'; person_id: string; voiceprint_id: string; confidence: number }
@@ -70,6 +85,9 @@ export class AudioSession {
   /** Session speakers resolved to people, and those currently being resolved. */
   private readonly resolved = new Map<string, { person_id: string; voiceprint_id: string }>()
   private readonly resolving = new Set<string>()
+  /** Pooled speech ms at the last ambiguous verdict, and how many we have had. */
+  private readonly ambiguousAt = new Map<string, number>()
+  private readonly ambiguousAttempts = new Map<string, number>()
   private readonly now: () => Date
   /** Decides which provider turns are the same voice. See speaker-clusterer.ts. */
   private readonly clusterer = new SpeakerClusterer()
@@ -118,7 +136,7 @@ export class AudioSession {
       this.buffer.setSpeakerAlias(assignment.label, assignment.clusterId)
     }
     await this.finalize(Number.POSITIVE_INFINITY)
-    await this.maybeAttribute()
+    await this.maybeAttribute(true)
     if (providerError) throw providerError
   }
 
@@ -262,13 +280,25 @@ export class AudioSession {
    * create. On resolution, re-emit that speaker's utterances with the person
    * attached — same utterance_id, so clients replace in place.
    */
-  private async maybeAttribute(): Promise<void> {
+  private async maybeAttribute(sessionEnding = false): Promise<void> {
     if (!this.options.identity) return
-    const floorMs = Number(process.env.EMBED_MIN_MS ?? EMBED_MIN_MS)
+    const floorMs = envNumber('EMBED_MIN_MS', EMBED_MIN_MS)
     this.announcePending(floorMs)
     for (const speaker of this.buffer.speakersOverFloor(floorMs)) {
       if (speaker === UNKNOWN_SPEAKER || this.resolved.has(speaker) || this.resolving.has(speaker)) {
         continue
+      }
+      const attempts = this.ambiguousAttempts.get(speaker) ?? 0
+      const lastAmbiguousAt = this.ambiguousAt.get(speaker)
+      const outOfRetries = attempts >= envNumber('ATTRIBUTION_MAX_ATTEMPTS', 3)
+      const isFinalAttempt = sessionEnding || outOfRetries
+      if (lastAmbiguousAt !== undefined && !isFinalAttempt) {
+        // The embedding is a pure function of the pooled clip, so retrying
+        // without new speech is guaranteed to reach the same verdict — and
+        // maybeAttribute runs on every 100 ms frame, on the same promise chain
+        // that carries audio ingest.
+        const growthMs = envNumber('ATTRIBUTION_RETRY_SPEECH_MS', floorMs)
+        if (this.buffer.speechMsFor(speaker) - lastAmbiguousAt < growthMs) continue
       }
       this.resolving.add(speaker)
       try {
@@ -282,13 +312,19 @@ export class AudioSession {
           duration_ms: embedding.duration_ms,
           conversation_id: this.options.conversationId,
           utterance_ids: utteranceIds,
+          ...(isFinalAttempt ? { final: true } : {}),
         })
         if (result.status === 'matched' || result.status === 'created') {
+          this.ambiguousAt.delete(speaker)
+          this.ambiguousAttempts.delete(speaker)
           this.resolved.set(speaker, {
             person_id: result.person_id,
             voiceprint_id: result.voiceprint_id,
           })
           await this.reEmitFor(speaker)
+        } else if (result.reason === 'ambiguous') {
+          this.ambiguousAt.set(speaker, this.buffer.speechMsFor(speaker))
+          this.ambiguousAttempts.set(speaker, attempts + 1)
         }
       } catch (error) {
         // Attribution is retryable on the next chunk; the transcript must not stall.

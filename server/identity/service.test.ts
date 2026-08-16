@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Fact, Person, PromiseMemory, Utterance, Voiceprint } from '../../shared/contracts';
 import { EMBED_MIN_MS, OWNER_ID, VOICEPRINT_DIMS } from '../../shared/contracts';
 import { createIdentityService } from './service';
@@ -578,5 +578,362 @@ describe('identity service', () => {
       name: 'Oldest record',
       utterance_ids: ['utterance-2'],
     });
+  });
+});
+
+function personFixture(id: string, name: string): Person {
+  return {
+    _id: id,
+    owner_id: OWNER_ID,
+    name,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+/**
+ * The fake $vectorSearch dots the stored embedding with the query, so an
+ * embedding of `[cosine, 0]` against a query of `[1, 0]` scores exactly the
+ * cosine asked for. That makes every margin in these tests arithmetic rather
+ * than a guess about vector geometry.
+ */
+function voiceprintFixture(id: string, personId: string, cosine: number): Voiceprint {
+  return {
+    _id: id,
+    owner_id: OWNER_ID,
+    person_id: personId,
+    embedding: [cosine, 0],
+    duration_ms: 4_000,
+    created_at: '2026-01-01T00:00:00.000Z',
+  };
+}
+
+const QUERY = [1, 0];
+
+function attribute(
+  harness: ReturnType<typeof createHarness>,
+  extra: { final?: boolean } = {},
+) {
+  return harness.service.attributeSpeaker({
+    embedding: QUERY,
+    duration_ms: EMBED_MIN_MS,
+    conversation_id: 'conversation-margin',
+    utterance_ids: ['utterance-margin'],
+    ...extra,
+  });
+}
+
+describe('identity service speaker margin', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The whole point of the opt-in: five people share this main, and an unset
+   * IDENTITY_MARGIN_COSINE has to mean "the code that shipped last week". Two
+   * rivals two hundredths apart is precisely the input the margin was built to
+   * hold back, so if the default ever stops being zero this is the test that
+   * notices.
+   */
+  it('still picks the nearest of two close rivals when no margin is configured', async () => {
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.88),
+      ],
+    });
+
+    const result = await attribute(harness);
+
+    expect(result).toEqual({
+      status: 'matched',
+      person_id: 'person-1',
+      voiceprint_id: 'voiceprint-1',
+      confidence: 0.9,
+    });
+    expect(harness.emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('mints a new person below the threshold when no margin is configured', async () => {
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam')],
+      voiceprints: [voiceprintFixture('voiceprint-1', 'person-1', 0.4)],
+    });
+
+    const result = await attribute(harness);
+
+    expect(result.status).toBe('created');
+    expect(harness.people.documents).toHaveLength(2);
+  });
+
+  it('holds two close rivals as ambiguous once a margin is configured', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.88),
+      ],
+    });
+
+    const result = await attribute(harness);
+
+    // Waiting must be free of side effects, or a retry would double-write.
+    expect(result).toEqual({ status: 'pending', reason: 'ambiguous' });
+    expect(harness.emit).not.toHaveBeenCalled();
+    expect(harness.people.documents).toHaveLength(2);
+    expect(harness.voiceprints.documents).toHaveLength(2);
+  });
+
+  it('takes the top candidate on the final attempt rather than staying nameless', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.88),
+      ],
+    });
+
+    const result = await attribute(harness, { final: true });
+
+    expect(result).toEqual({
+      status: 'matched',
+      person_id: 'person-1',
+      voiceprint_id: 'voiceprint-1',
+      confidence: 0.9,
+    });
+  });
+
+  it('matches when the winner clears the runner-up by more than the margin', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.7),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toMatchObject({
+      status: 'matched',
+      person_id: 'person-1',
+    });
+  });
+
+  it('mints a new person when every candidate is below the threshold under a margin', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.5),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.49),
+      ],
+    });
+
+    const result = await attribute(harness);
+
+    expect(result.status).toBe('created');
+    expect(harness.people.documents).toHaveLength(3);
+  });
+
+  /**
+   * A margin makes the walk go two people deep, which is exactly where the
+   * orphan skip could have been lost: the orphan now sits between the winner
+   * and the runner-up instead of in front of a single candidate.
+   */
+  it('skips an orphan while still measuring the margin between the two real people', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-orphan', 'person-deleted', 0.95),
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.88),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toEqual({ status: 'pending', reason: 'ambiguous' });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('matches past an orphan when the two real people are far apart', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-orphan', 'person-deleted', 0.95),
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.7),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toMatchObject({
+      status: 'matched',
+      person_id: 'person-1',
+      voiceprint_id: 'voiceprint-1',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * The first person ever enrolled has nobody to be compared against. A margin
+   * computed as best-minus-nothing is the classic way to make that person
+   * permanently unattributable, so both of the smallest possible databases are
+   * pinned here.
+   */
+  it('attributes the only person in the database under a margin', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam')],
+      voiceprints: [voiceprintFixture('voiceprint-1', 'person-1', 0.9)],
+    });
+
+    const result = await attribute(harness);
+
+    expect(result).toMatchObject({ status: 'matched', person_id: 'person-1' });
+    expect(result.status === 'matched' && Number.isFinite(result.confidence)).toBe(true);
+  });
+
+  it('survives an empty database under a margin', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness();
+
+    await expect(attribute(harness)).resolves.toMatchObject({ status: 'created' });
+  });
+
+  it('attributes when only one of two enrolled people clears the threshold', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.5');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        // Below ATTRIBUTION_THRESHOLD, so the walk stops before it and it is
+        // not a rival at all — otherwise a 0.5 margin would swallow this match.
+        voiceprintFixture('voiceprint-2', 'person-2', 0.55),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toMatchObject({
+      status: 'matched',
+      person_id: 'person-1',
+    });
+  });
+
+  /**
+   * Somebody who has enrolled twice is their own nearest neighbour. Comparing
+   * rows instead of people would make every well-enrolled person ambiguous
+   * forever — the more audio you give Amelia about someone, the less it could
+   * recognise them.
+   */
+  it('does not treat a person second voiceprint as a rival', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1a', 'person-1', 0.95),
+        voiceprintFixture('voiceprint-1b', 'person-1', 0.93),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.7),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toEqual({
+      status: 'matched',
+      person_id: 'person-1',
+      voiceprint_id: 'voiceprint-1a',
+      confidence: 0.95,
+    });
+  });
+
+  /**
+   * Deduping rivals by person only helps if the rival is inside the search
+   * window at all. A person who has enrolled a few times — or who survived a
+   * merge, which repoints every loser print onto them — can fill a three-row
+   * window on their own, and the runner-up the margin is measured against then
+   * never exists. The blind spot would be worst for exactly the people Amelia
+   * knows best.
+   */
+  it('sees the runner-up past a person who owns more prints than the old window held', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1a', 'person-1', 0.95),
+        voiceprintFixture('voiceprint-1b', 'person-1', 0.94),
+        voiceprintFixture('voiceprint-1c', 'person-1', 0.93),
+        voiceprintFixture('voiceprint-1d', 'person-1', 0.92),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.91),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toEqual({ status: 'pending', reason: 'ambiguous' });
+  });
+
+  /**
+   * The wider window is part of the margin, not a free upgrade: with the margin
+   * off nothing past the first live candidate can change the answer, and this
+   * path must keep asking Atlas for exactly what it always asked for.
+   */
+  it('leaves the search window at three rows when no margin is configured', async () => {
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam')],
+      voiceprints: [voiceprintFixture('voiceprint-1', 'person-1', 0.9)],
+    });
+    const aggregate = vi.spyOn(harness.voiceprints, 'aggregate');
+
+    await attribute(harness);
+
+    const [pipeline] = aggregate.mock.calls[0] as [Record<string, unknown>[]];
+    expect((pipeline[0].$vectorSearch as { limit: number }).limit).toBe(3);
+  });
+
+  /**
+   * A copied .env.example ships this blank, and Number('') is 0 — which reads
+   * as "margin off" only by luck here, and as "safety disabled" everywhere
+   * else. Blank means default, not zero.
+   */
+  it('treats a blank margin as unset rather than as a number', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam'), personFixture('person-2', 'Alex')],
+      voiceprints: [
+        voiceprintFixture('voiceprint-1', 'person-1', 0.9),
+        voiceprintFixture('voiceprint-2', 'person-2', 0.88),
+      ],
+    });
+
+    await expect(attribute(harness)).resolves.toMatchObject({
+      status: 'matched',
+      person_id: 'person-1',
+    });
+  });
+
+  it('falls back to the contract threshold when the override is blank', async () => {
+    vi.stubEnv('ATTRIBUTION_THRESHOLD', '');
+    const harness = createHarness({
+      people: [personFixture('person-1', 'Sam')],
+      voiceprints: [voiceprintFixture('voiceprint-1', 'person-1', 0.4)],
+    });
+
+    // A blank threshold parsed as 0 would attribute this stranger to Sam.
+    await expect(attribute(harness)).resolves.toMatchObject({ status: 'created' });
+  });
+
+  it('leaves a below-floor sample pending even with a margin configured', async () => {
+    vi.stubEnv('IDENTITY_MARGIN_COSINE', '0.05');
+    const harness = createHarness();
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: QUERY,
+      duration_ms: EMBED_MIN_MS - 1,
+      conversation_id: 'conversation-margin',
+      utterance_ids: ['utterance-margin'],
+    });
+
+    expect(result).toEqual({ status: 'pending', reason: 'below_floor' });
   });
 });
