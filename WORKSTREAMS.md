@@ -84,3 +84,56 @@ useful early than late.
 
 Existing constraints from `CLAUDE.md`: light mode only, Manrope and Newsreader,
 Phosphor icons, sentence-case copy, no emoji.
+
+---
+
+## Backlog
+
+Unclaimed and undriven. Written down so the next person picking something up
+starts from context rather than from scratch.
+
+### Contact sync
+
+A person in Amelia today is a voiceprint plus a name somebody typed into the
+naming sheet — `Person` in `shared/contracts.ts` carries `_id`, `owner_id`,
+`name`, an optional `relationship`, and timestamps, and nothing else. So the
+system can recognise a voice across weeks of conversation and still not be able
+to put a phone number to it. That gap is the whole reason this belongs in
+Amelia specifically: the product's claim is a memory of the people in the room,
+and the address book is where the rest of what you know about those people
+already lives.
+
+Contact sync means reconciling Amelia's people against the phone's address
+book, in both directions. When someone types "Maya" into the naming sheet,
+offer the matching contact rather than making them retype what the phone
+already knows. When there's no match, offer to create a contact for the voice
+that just got a name.
+
+Where it touches existing code:
+
+- `shared/contracts.ts` — `Person` needs somewhere to hold the link. A contact
+  identifier rather than a copy of the contact is the cheaper shape, and it
+  keeps the address book authoritative. This is a shared-contract change, so it
+  wants to land as its own commit first.
+- `app/src/components/naming-sheet.tsx` — the natural place for a match to
+  surface, since it already takes a name and a relationship and is the one
+  moment a human is deliberately telling Amelia who this is. It currently calls
+  `onSave(name, relationship, isOwner?)`; a contact suggestion is another thing
+  that flows through that same confirmation.
+- `mergePeople` (`server/memory/store.ts:318`, exposed via
+  `POST /people/merge` and `app/src/lib/api.ts`) — two Amelia people resolving
+  to the same contact is evidence they are the same person, which is exactly
+  the judgement merge already exists to carry out. Contact sync should produce
+  merge candidates for a human to confirm, not merge on its own.
+
+The hazard is the point, not a footnote. The address book is personal data
+about people who never opted into Amelia and cannot be asked. It should be read
+on demand, on the device, for the duration of a match, and not uploaded,
+mirrored into Atlas, or embedded. Nothing about a contact should leave the
+phone without the owner explicitly choosing to send that specific thing. A
+stored contact identifier is a pointer the phone can resolve; a stored phone
+number is somebody else's data sitting on our server.
+
+Note that `expo-contacts` is not currently a dependency in `app/package.json`,
+so this starts with adding it and with the OS permission prompt that comes with
+it — worth knowing before scoping it as an afternoon.
