@@ -19,11 +19,14 @@ import type {
   SearchMemoryResult,
   Timestamp,
 } from '../../shared/contracts';
+// A pure string function, not a reach into Lane B's collections — the double is
+// only useful while it agrees with the real thing about what counts as a change.
+import { normalizeClaim } from '../memory/normalize';
 
 const OWNER = 'owner';
 const T = (iso: string): Timestamp => new Date(iso).toISOString();
 
-const PEOPLE: Person[] = [
+const BASE_PEOPLE: Person[] = [
   {
     _id: 'p-amelia-owner',
     owner_id: OWNER,
@@ -58,11 +61,15 @@ const PEOPLE: Person[] = [
 const fact = (f: Omit<Fact, 'owner_id' | 'claim_normalized' | 'created_at'>): Fact => ({
   ...f,
   owner_id: OWNER,
-  claim_normalized: f.claim.toLowerCase(),
+  // The real normalizer, not a lowercase stand-in. It also strips accents and
+  // punctuation and collapses whitespace, so "July 15." and "July 15" collide
+  // in Mongo — a double that only lowercases would say they differ and quietly
+  // disagree with production about whether anything changed.
+  claim_normalized: normalizeClaim(f.claim),
   created_at: f.valid_from,
 });
 
-const FACTS: Fact[] = [
+const BASE_FACTS: Fact[] = [
   // The supersession chain the demo turns on.
   fact({
     _id: 'f-maya-move-old',
@@ -142,6 +149,14 @@ export interface FixtureMemory extends MemoryApi {
 
 export function createFixtureMemory(): FixtureMemory {
   const calls: string[] = [];
+
+  // Per-instance copies. `setFact` and `namePerson` write, and while the
+  // fixtures were read-only it did not matter that every caller shared one
+  // array — now a test that renames somebody would rename them for every test
+  // after it, in file order, which is the kind of failure that looks like
+  // flakiness and gets re-run rather than read.
+  const PEOPLE = structuredClone(BASE_PEOPLE);
+  const FACTS = structuredClone(BASE_FACTS);
 
   const search: MemoryApi['searchMemory'] = async (query, personId) => {
     calls.push(`searchMemory(${query}${personId ? `, ${personId}` : ''})`);
@@ -234,6 +249,13 @@ export function createFixtureMemory(): FixtureMemory {
       const previous = FACTS.find(
         (f) => f.person_id === personId && f.attribute === attribute && !f.superseded_by,
       );
+
+      // Same guard as store.setFact. Without it, restating something already
+      // true supersedes a fact with itself, which spends a row and reads as a
+      // change in the timeline when nothing changed — and this double is what
+      // Lane D's demo runs against, so the divergence would show up on stage
+      // rather than in a test.
+      if (previous && previous.claim_normalized === normalizeClaim(claim)) return previous;
       const written = fact({
         _id: `f-set-${attribute}-${FACTS.length}`,
         person_id: personId,
