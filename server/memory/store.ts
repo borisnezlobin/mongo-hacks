@@ -166,6 +166,38 @@ export async function addNote(bus: AmeliaBus, personId: Id, text: string): Promi
   });
 }
 
+/**
+ * Set an attribute to a value stated out loud, superseding what it was.
+ *
+ * The synthetic source id is derived from the fact being replaced rather than
+ * from the claim alone. Claim-only would be idempotent in the wrong direction:
+ * a birthday corrected from the 15th to the 20th and back to the 15th would
+ * match the first fact's identity, and `insertIdempotent` would hand back that
+ * already-superseded row instead of making the 15th current again. Keying on
+ * the predecessor makes every transition its own row, which is what a history
+ * is.
+ */
+export async function setFact(
+  bus: AmeliaBus,
+  personId: Id,
+  attribute: string,
+  claim: string,
+): Promise<Fact> {
+  const current = await resolveFactState(personId, attribute);
+
+  // Already true. Superseding a fact with itself would spend a row and read as
+  // a change in the timeline when nothing changed.
+  if (current && current.claim_normalized === normalizeClaim(claim)) return current;
+
+  return recordFact(bus, {
+    person_id: personId,
+    attribute,
+    claim,
+    primary_source_utterance_id: `spoken-${attribute}-${current?._id ?? 'initial'}`,
+    ...(current ? { supersedes: current._id } : {}),
+  });
+}
+
 export interface PromiseDraft {
   person_id: Id;
   source_utterance_id: Id;

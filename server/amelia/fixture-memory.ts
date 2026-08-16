@@ -225,5 +225,38 @@ export function createFixtureMemory(): FixtureMemory {
         valid_from: new Date().toISOString(),
       });
     },
+
+    async setFact(personId: Id, attribute: string, claim: string): Promise<Fact> {
+      calls.push(`setFact(${personId}, ${attribute}, ${claim})`);
+      // Mutates the fixture so a set followed by a resolve in the same run
+      // answers with what was just set. A double that always reports success
+      // and then forgets would let a broken supersession pass its own test.
+      const previous = FACTS.find(
+        (f) => f.person_id === personId && f.attribute === attribute && !f.superseded_by,
+      );
+      const written = fact({
+        _id: `f-set-${attribute}-${FACTS.length}`,
+        person_id: personId,
+        attribute,
+        claim,
+        primary_source_utterance_id: `spoken-${attribute}-${previous?._id ?? 'initial'}`,
+        valid_from: new Date().toISOString(),
+      });
+      if (previous) {
+        previous.superseded_by = written._id;
+        previous.superseded_at = written.valid_from;
+      }
+      FACTS.push(written);
+      return written;
+    },
+
+    async namePerson(personId: Id, name: string, relationship?: string) {
+      calls.push(`namePerson(${personId}, ${name}${relationship ? `, ${relationship}` : ''})`);
+      const person = PEOPLE.find((p) => p._id === personId);
+      if (!person) return null;
+      person.name = name;
+      if (relationship) person.relationship = relationship;
+      return person;
+    },
   };
 }

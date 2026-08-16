@@ -224,6 +224,28 @@ export interface MemoryApi {
   resolveFactState(personId: Id, attribute: string): Promise<Fact | null>;
   createReminder(promiseId: Id, fireAt: Timestamp): Promise<Reminder>;
   addNote(personId: Id, text: string): Promise<Fact>;
+  /**
+   * Set the current value of one attribute, superseding whatever it was.
+   *
+   * The write goes through the same append-only path extraction uses, so a
+   * value corrected out loud keeps its history exactly like one lifted from a
+   * turn — `resolve_fact_state` still answers with the current claim, and the
+   * old one is still reachable behind `superseded_by`. A second way to write
+   * facts would be a second thing to keep consistent with supersession, and
+   * the first thing to forget.
+   *
+   * Saying something already true is a no-op rather than a fact superseding
+   * itself.
+   */
+  setFact(personId: Id, attribute: string, claim: string): Promise<Fact>;
+  /**
+   * Name a person, or correct the name they already have.
+   *
+   * Names are not facts: `Person.name` is what every screen renders and what
+   * the identity lane re-files past utterances under, so it is a field rather
+   * than a supersession chain. Returns null when the person is gone.
+   */
+  namePerson(personId: Id, name: string, relationship?: string): Promise<Person | null>;
 }
 
 export interface AudioUplink {
