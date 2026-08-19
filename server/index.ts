@@ -10,6 +10,7 @@ import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
 import { registerGlassesRoutes, startGlassesServer } from './glasses';
 import { registerIdentityRoutes } from './identity';
+import { bearerAuth } from './lib/auth';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
 import { rawCosine, voiceprintSearchPipeline } from './identity/service';
@@ -34,6 +35,7 @@ export function createApp() {
   const deps = { bus, memory };
 
   app.use('*', cors());
+  app.use('*', bearerAuth());
   app.onError((error, context) => {
     console.error(error);
     return context.json({ error: error.message }, 500);

@@ -1,6 +1,6 @@
 name: tarun-yadgirkar
 status: active
-updated: 2026-08-15T23:50Z
+updated: 2026-08-19T19:05Z
 
 ## Now
 
@@ -38,6 +38,15 @@ works on the failure it targets, and it is **not** a claim about ECAPA. Pass
 
 ## Heads up
 
+- **`server/index.ts` gained one middleware line: opt-in bearer auth.**
+  `server/lib/auth.ts` is a no-op while `AMELIA_API_KEY` is unset, which is
+  every checkout today — nothing changes for the app or the golden path. Set
+  it and every HTTP route but `/health` wants `Authorization: Bearer <key>`
+  (SSE `/events` included — react-native-sse can send headers; browsers'
+  EventSource cannot). `/stream` (WebSocket) and the glasses Express server
+  are not covered. Context: siyi (my CRM) now calls Amelia's HTTP API from
+  its `siyi-amelia` branch and already sends the header when its side is
+  configured.
 - **`shared/contracts.ts` changed — re-pull before you build against MemoryApi.**
   It gained `setFact(personId, attribute, claim)` and `namePerson(personId,
   name, relationship?)`, landed as their own commit ahead of the tools that call
