@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { VOICEPRINT_DIMS } from '../../shared/contracts'
-import { ADJACENCY_WINDOW_MS, MIN_NEW_CLUSTER_MS, SpeakerClusterer, cosine } from './speaker-clusterer'
+import { SESSION_LINK_THRESHOLD, VOICEPRINT_DIMS } from '../../shared/contracts'
+import { ADJACENCY_WINDOW_MS, LINK_THRESHOLD, MIN_NEW_CLUSTER_MS, SpeakerClusterer, cosine } from './speaker-clusterer'
 
 /**
  * Two deterministic, well-separated voices plus a jitter knob, so tests can say
@@ -15,6 +15,20 @@ function voice(seed: number, jitter = 0): number[] {
 
 const ANN = 0
 const BEN = 1
+
+/**
+ * A vector at an exact cosine to `base`, so a test can reproduce a measured
+ * similarity rather than a made-up one. dorm-9pm gives 0.329 same-speaker and
+ * 0.162 cross-speaker per segment.
+ */
+function atSimilarity(base: number[], similarity: number, direction: number[]): number[] {
+  const projection = base.reduce((sum, value, i) => sum + value * direction[i], 0)
+  const orthogonal = direction.map((value, i) => value - projection * base[i])
+  const norm = Math.sqrt(orthogonal.reduce((sum, value) => sum + value * value, 0))
+  const unit = orthogonal.map((value) => value / norm)
+  const perpendicular = Math.sqrt(1 - similarity * similarity)
+  return base.map((value, i) => similarity * value + perpendicular * unit[i])
+}
 
 let clock = 0
 function turn(label: string, durationMs: number, gapMs = 200) {
@@ -176,6 +190,38 @@ describe('SpeakerClusterer', () => {
     const centroid = cosine(clusterer.all[0].centroid, truth)
     const singleTurn = cosine(voice(ANN, 0.3), truth)
     expect(centroid).toBeGreaterThan(singleTurn)
+  })
+
+  /**
+   * The calibration this module was re-tuned for. At the old LINK_THRESHOLD of
+   * 0.5 — a synthetic-fixture number — a real same-speaker pair at 0.33 failed
+   * to link and every turn became its own speaker.
+   */
+  it('links a same-speaker pair at the similarity measured on real room audio', () => {
+    reset()
+    const clusterer = new SpeakerClusterer()
+    const base = voice(ANN)
+    clusterer.add(turn('turn-0', 4000), base)
+    const [assignment] = clusterer.add(turn('turn-1', 4000), atSimilarity(base, 0.329, voice(BEN)))
+
+    expect(assignment.reason).toBe('matched')
+    expect(clusterer.all).toHaveLength(1)
+  })
+
+  it('splits a cross-speaker pair at the similarity measured on real room audio', () => {
+    reset()
+    const clusterer = new SpeakerClusterer()
+    const base = voice(ANN)
+    clusterer.add(turn('turn-0', 4000), base)
+    clusterer.add(turn('turn-1', 4000), atSimilarity(base, 0.162, voice(BEN)))
+
+    expect(clusterer.all).toHaveLength(2)
+  })
+
+  it('links on the session threshold from contracts, not a local constant', () => {
+    expect(LINK_THRESHOLD).toBe(SESSION_LINK_THRESHOLD)
+    expect(LINK_THRESHOLD).toBeGreaterThan(0.162)
+    expect(LINK_THRESHOLD).toBeLessThan(0.329)
   })
 
   it('rejects an embedding of the wrong dimensionality', () => {

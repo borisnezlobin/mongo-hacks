@@ -1,15 +1,25 @@
 import WebSocket from 'ws'
+import { audioConfig } from './config'
 import { SAMPLE_RATE, type Segment, type StreamProvider, type Word } from './types'
 
 const REALTIME_SAMPLE_RATE = 24_000
 const DEFAULT_REALTIME_URL = 'wss://api.openai.com/v1/realtime?intent=transcription'
 /**
- * Diarisation carries the speaker labels the join depends on, so it is the
- * default. Not every organisation is entitled to that model, hence the
- * override: OPENAI_TRANSCRIBE_MODEL swaps in a plain transcription model,
- * which still yields text but collapses every turn onto one speaker label.
+ * Not gpt-4o-transcribe-diarize, and not because of a guess.
+ *
+ * Probed against this key: the realtime endpoint answers "Your organization
+ * does not have access to this transcription model" for the diarizing model
+ * while the batch transcriptions endpoint serves it happily. Live audio
+ * therefore gets text and VAD turn boundaries only; speaker labels come from
+ * the final pass in session.ts. OPENAI_TRANSCRIBE_MODEL still overrides.
  */
-const DEFAULT_TRANSCRIBE_MODEL = 'gpt-4o-transcribe-diarize'
+const DEFAULT_TRANSCRIBE_MODEL = 'gpt-4o-transcribe'
+
+/** The API's own floor for input_audio_buffer.commit. Below it, it errors. */
+const MIN_COMMIT_MS = 100
+
+/** Committing a buffer server VAD already took. Benign; see handleEvent. */
+const EMPTY_COMMIT = /buffer too small/i
 
 interface RealtimeSocket {
   readyState: number
@@ -45,6 +55,16 @@ export class OpenAIRealtimeProvider implements StreamProvider {
   private opened = false
   private closed = false
   private sentAudio = false
+  /**
+   * Audio appended since the server last committed a turn.
+   *
+   * Server VAD commits on its own, so by the time capture stops the buffer is
+   * usually already empty. Committing anyway made the API answer "buffer too
+   * small ... only has 0.00ms of audio", which this class turns into a thrown
+   * error — so every single recording ended by aborting the session teardown,
+   * and the live provider could not be evaluated at all.
+   */
+  private uncommittedMs = 0
   private failure: Error | null = null
   private flushComplete: (() => void) | null = null
   private readonly pendingAudio: string[] = []
@@ -100,10 +120,12 @@ export class OpenAIRealtimeProvider implements StreamProvider {
                 type: 'server_vad',
                 threshold: 0.5,
                 prefix_padding_ms: 300,
-                // Short, because turn boundaries are load-bearing here: without
-                // a diarising model each VAD turn is the unit that voiceprint
-                // matching attributes, so conversational gaps must split.
-                silence_duration_ms: Number(process.env.OPENAI_SILENCE_MS ?? 200),
+                // Turn boundaries stopped being the unit of attribution once
+                // the clusterer pooled turns by voice, so this no longer has to
+                // be aggressive — and 200 ms measurably shattered the last ten
+                // seconds of the dorm recording into one- and two-word turns
+                // that carry no usable voiceprint. See config.ts.
+                silence_duration_ms: audioConfig().silenceMs,
               },
             },
           },
@@ -145,6 +167,7 @@ export class OpenAIRealtimeProvider implements StreamProvider {
         ? positionMs + Math.round((pcm.length / SAMPLE_RATE) * 1000)
         : this.positionMs + Math.round((pcm.length / SAMPLE_RATE) * 1000)
     this.sentAudio = true
+    this.uncommittedMs += (pcm.length / SAMPLE_RATE) * 1000
     const audio = pcm16Base64(resampleLinear(pcm, SAMPLE_RATE, REALTIME_SAMPLE_RATE))
     if (this.opened) this.append(audio)
     else if (!this.closed) this.pendingAudio.push(audio)
@@ -165,8 +188,10 @@ export class OpenAIRealtimeProvider implements StreamProvider {
     }
     await this.ready
     // Server VAD commits normal turns. This final commit flushes a trailing
-    // turn that ended exactly when capture stopped.
-    if (this.sentAudio) {
+    // turn that ended exactly when capture stopped — and only then. The API
+    // rejects a commit below its 100 ms minimum, and the usual case at close is
+    // an empty buffer VAD already took.
+    if (this.sentAudio && this.uncommittedMs >= MIN_COMMIT_MS) {
       const flushed = new Promise<void>((resolve) => {
         this.flushComplete = resolve
       })
@@ -199,7 +224,20 @@ export class OpenAIRealtimeProvider implements StreamProvider {
     }
     if (event.type === 'error') {
       const detail = event as { error?: { message?: string } }
-      throw new Error(detail.error?.message ?? 'OpenAI Realtime error')
+      const message = detail.error?.message ?? 'OpenAI Realtime error'
+      // The closing commit races server VAD, which commits on its own. Guarding
+      // on how much audio we have appended removes the common case but cannot
+      // remove the race: VAD can take the buffer between the check and the
+      // send. An empty buffer at close is the state we wanted anyway, so this
+      // is not a failure — and treating it as one aborted the teardown of every
+      // single recording, which is how it stayed unnoticed.
+      if (EMPTY_COMMIT.test(message)) {
+        this.uncommittedMs = 0
+        this.flushComplete?.()
+        this.flushComplete = null
+        return
+      }
+      throw new Error(message)
     }
     // Diarising models hand back speaker labels and timings directly. Every
     // other transcription model returns text only, so the two paths below
@@ -260,6 +298,12 @@ export class OpenAIRealtimeProvider implements StreamProvider {
       this.partialText.set(delta.item_id, text)
       if (!text.trim()) return
       this.emitTurn(bounds.label, bounds.start_ms, Math.max(this.positionMs, bounds.start_ms + 1), text.trim())
+      return
+    }
+
+    // The server took the buffer, so there is nothing left for us to flush.
+    if (event.type === 'input_audio_buffer.committed') {
+      this.uncommittedMs = 0
       return
     }
 

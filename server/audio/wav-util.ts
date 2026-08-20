@@ -19,6 +19,10 @@ export function concatenate(chunks: Float32Array[]): Float32Array {
 }
 
 export function encodeWav(input: Float32Array): string {
+  return Buffer.from(encodeWavBytes(input)).toString('base64')
+}
+
+export function encodeWavBytes(input: Float32Array): Uint8Array {
   const dataBytes = input.length * 2
   const wav = Buffer.allocUnsafe(44 + dataBytes)
   wav.write('RIFF', 0, 'ascii')
@@ -38,7 +42,7 @@ export function encodeWav(input: Float32Array): string {
     const sample = Math.max(-1, Math.min(1, input[index]))
     wav.writeInt16LE(sample < 0 ? Math.round(sample * 32768) : Math.round(sample * 32767), 44 + index * 2)
   }
-  return wav.toString('base64')
+  return new Uint8Array(wav.buffer, wav.byteOffset, wav.byteLength)
 }
 
 export function spreadWords(text: string, startMs: number, endMs: number): Word[] {

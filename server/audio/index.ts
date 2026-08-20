@@ -10,7 +10,7 @@
 
 import type { Server } from 'node:http'
 import type { Hono } from 'hono'
-import { MongoClient, type Collection } from 'mongodb'
+import type { Collection } from 'mongodb'
 // `ws` is CommonJS, so Node's ESM loader does not expose its named exports and the value
 // has to be required outright. ws@8 is pinned in server/package.json deliberately: the
 // message handler below relies on the `isBinary` argument, which ws@7 does not pass, and
@@ -29,11 +29,13 @@ import {
   type Utterance,
 } from '../../shared/contracts'
 import type { AmeliaBus } from '../lib/bus'
+import { getStorage } from '../storage'
 import { createIdentityService, type IdentityService } from '../identity'
 import { embedPcm } from './embed-client'
 import { OpenAIRealtimeProvider } from './openai-realtime-provider'
 import { OpenRouterProvider } from './openrouter-provider'
 import { PyannoteProvider } from './pyannote-provider'
+import { OWNER_PERSON_ID } from '../amelia/wake'
 import { titleConversation } from '../memory/title'
 import { AudioSession } from './session'
 import type { StreamProvider } from './types'
@@ -48,56 +50,39 @@ interface AudioDeps {
 
 let cached: Promise<AudioDeps> | null = null
 
-/**
- * How long to wait for Atlas before giving up and recording without it. Short
- * on purpose: the driver's 30s default means the first spoken word of a session
- * is half a minute old before anything reaches the screen.
- */
-const DB_CONNECT_TIMEOUT_MS = 5_000
 
 /**
- * Resolve Mongo-backed dependencies once, lazily.
+ * Resolve storage-backed dependencies once, lazily.
  *
- * Persistence is optional and always has been — without MONGODB_URI the session
- * runs emit-only. What was not optional, and should have been, is Atlas being
- * *reachable*: a connection failure used to reject, leaving the session null, so
- * every audio frame after it died with the thoroughly misleading "binary frame
- * before hello" and the user saw a recording that produced nothing at all. A
- * dropped database costs us history and voiceprints. It must not cost us the
- * transcript, which is the part the user is watching.
+ * This used to build its own MongoClient, so on any machine that could not
+ * reach Atlas it fell back to emit-only and printed "speakers cannot be
+ * identified" — which on the owner's campus network is every single time. The
+ * transcript survived and identity, the entire point of the product, did not.
  *
- * The rejection was also cached, so one failed connect disabled audio for the
- * lifetime of the process. Now a failure degrades this session and is retried
- * on the next one.
+ * Matching is exact cosine in this process now, so identity needs a document
+ * store and nothing more. `getStorage()` hands back Atlas when it is reachable
+ * and a durable local store when it is not, and either satisfies this lane.
  */
 async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
   const emitOnly = (): AudioDeps => ({ bus, identity: null, utterances: null, conversations: null, people: null })
   cached ??= (async () => {
-    const uri = process.env.MONGODB_URI
-    if (!uri) {
-      console.warn('MONGODB_URI not set: audio sessions run emit-only, identity disabled')
-      return emitOnly()
-    }
-    const client = await new MongoClient(uri, {
-      serverSelectionTimeoutMS: DB_CONNECT_TIMEOUT_MS,
-    }).connect()
-    const db = client.db()
+    const storage = await getStorage()
     const identity: IdentityService = createIdentityService({
       collections: {
-        people: db.collection('people'),
-        voiceprints: db.collection('voiceprints'),
-        utterances: db.collection('utterances'),
-        facts: db.collection('facts'),
-        promises: db.collection('promises'),
+        people: storage.collection('people'),
+        voiceprints: storage.collection('voiceprints'),
+        utterances: storage.collection('utterances'),
+        facts: storage.collection('facts'),
+        promises: storage.collection('promises'),
       },
       bus,
     })
     return {
       bus,
       identity,
-      utterances: db.collection<Utterance>('utterances'),
-      conversations: db.collection<{ _id: string }>('conversations'),
-      people: db.collection<Person>('people'),
+      utterances: storage.collection('utterances') as unknown as Collection<Utterance>,
+      conversations: storage.collection('conversations') as unknown as Collection<{ _id: string }>,
+      people: storage.collection('people') as unknown as Collection<Person>,
     }
   })()
 
@@ -105,8 +90,8 @@ async function audioDeps(bus: AmeliaBus): Promise<AudioDeps> {
     return await cached
   } catch (error) {
     console.error(
-      'Mongo unavailable — recording anyway, but nothing will be saved and speakers ' +
-        'cannot be identified. Check the Atlas IP allowlist.',
+      'Storage unavailable — recording anyway, but nothing will be saved and speakers ' +
+        'cannot be identified.',
       (error as Error).message,
     )
     cached = null
@@ -202,7 +187,10 @@ export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
     const result = await identity.enroll({
       // owner=1 reuses the seeded owner person instead of creating a new one,
       // so venue enrollment upgrades the wake gate from the fixture voiceprint.
-      person_id: context.req.query('owner') === '1' ? 'p-amelia-owner' : undefined,
+      // Taken from wake.ts rather than written out again: when the literal here
+      // and the id the wake gate checks drift apart, voice summon compares
+      // against a person who does not exist and simply stops working, silently.
+      person_id: context.req.query('owner') === '1' ? OWNER_PERSON_ID : undefined,
       name,
       duration_ms: embedding.duration_ms,
       embedding: embedding.vector,
@@ -270,10 +258,29 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
 
     socket.on('close', () => {
       enqueue(async () => {
-        const finished = session?.conversationId
-        await session?.end()
+        const finished = session
+        await finished?.end()
         session = null
-        if (finished) await nameConversation(finished, deps.bus as AmeliaBus)
+        if (!finished) return
+        // The second pass. The retained audio is transcribed by whisper and
+        // diarized by pyannote, joined at word level, and the transcript is
+        // rebuilt in place under the same utterance ids, so a user still
+        // reading it watches the words and the names settle. Failures here are
+        // logged, never thrown: the live transcript is already saved and a
+        // missing correction must not read as a failed recording.
+        const report = await finished.runFinalPass().catch((error) => {
+          console.error(`final pass failed for ${finished.conversationId}`, error)
+          return null
+        })
+        if (report?.ran) {
+          console.log(
+            `final pass on ${finished.conversationId}: ${report.labels.length} speakers, ` +
+              `${report.attributedWords ?? 0}/${report.totalWords ?? 0} words attributed, ` +
+              `${report.corrected} utterances rewritten, ${report.superseded ?? 0} superseded` +
+              (report.reason ? ` — ${report.reason}` : ''),
+          )
+        }
+        await nameConversation(finished.conversationId, deps.bus as AmeliaBus)
       })
     })
   })
