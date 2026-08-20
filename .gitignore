@@ -14,3 +14,40 @@ bun.lockb
 # Generated native projects (expo prebuild)
 app/ios/
 app/android/
+
+# Retained session audio for the final diarization pass. Bounded by
+# AUDIO_RETAIN_MAX_MS; delete freely.
+.recordings/
+
+# Local-first storage: the journal and snapshot when AMELIA_DATA_DIR points inside the repo.
+.amelia-data/
+
+# Real recorded conversations and anything derived from them.
+#
+# fixtures/real/ holds an actual conversation between real people. The audio,
+# the transcript and the ECAPA embeddings are all personal data — the transcript
+# includes someone's health information, and a voiceprint is a biometric
+# identifier for a person who never agreed to appear in a shared repository.
+# Two of the three speakers are not contributors to this project.
+#
+# Committing it is a decision about other people's privacy, so it is opt-in:
+# force-add deliberately if the team agrees. Tests that need these fixtures skip
+# with instructions when they are absent; regenerate with the scripts in
+# eval/real/.
+fixtures/real/
+eval/real/*.npz
+# The .json here is the same data one step further along: verbatim transcripts,
+# speaker turns and ground-truth labels derived from that audio. The scripts
+# (*.py, *.mts) are how it is regenerated and are safe to commit — the outputs
+# are not.
+eval/real/*.json
+# Sweeps write candidate diarizations into subdirectories of eval/real/, and a
+# candidate is the same personal data as the fixture it came from. The rule
+# above only covers the top level, so it is repeated one level down rather than
+# left to whoever next runs a sweep to notice.
+eval/real/**/*.json
+eval/real/*.log
+
+# A speechbrain savedir that stringified to "None" — downloaded model
+# checkpoints, not source. Regenerated on demand by the sidecar.
+None/
