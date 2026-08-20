@@ -7,7 +7,7 @@
  */
 import transcript from '../fixtures/transcript.json' with { type: 'json' };
 import { createApp } from '../server/index';
-import { collections, closeDb } from '../server/memory/db';
+import { collections, closeDb, initStorage } from '../server/memory/db';
 import { answerQuestion } from '../server/ask';
 import { getFactHistory, listPromises, resolveFactState } from '../server/memory/store';
 import { OWNER_ID } from '../shared/contracts';
@@ -20,6 +20,9 @@ function check(label: string, condition: boolean, detail = ''): void {
 }
 
 async function main(): Promise<void> {
+  const health = await initStorage();
+  console.log(`storage: ${health.driver}${health.degraded ? ` (Atlas unreachable: ${health.mongo.error})` : ''}`);
+
   const { app } = createApp();
 
   for (const utterance of transcript.utterances) {
@@ -47,7 +50,7 @@ async function main(): Promise<void> {
   const stored = await collections
     .utterances()
     .countDocuments({ owner_id: OWNER_ID, conversation_id: transcript.conversation_id });
-  check('every fixture utterance reached Atlas', stored === transcript.utterances.length, `${stored} stored`);
+  check('every fixture utterance reached the store', stored === transcript.utterances.length, `${stored} stored`);
 
   const moveHistory = await getFactHistory('p-maya', 'move');
   const currentMove = await resolveFactState('p-maya', 'move');
