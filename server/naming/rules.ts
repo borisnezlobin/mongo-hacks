@@ -63,6 +63,13 @@ const ANSWER_WINDOW_MS = 15_000;
 const ANSWER_WINDOW_TURNS = 4;
 /** An answer to "what's your name" is a name and almost nothing else. */
 const ANSWER_MAX_TOKENS = 6;
+/**
+ * The answer glued into the question's own turn. Worth less than either reading
+ * below because such a turn demonstrably holds two people — the asker and the
+ * answerer — so which of them the turn's label belongs to is exactly what is in
+ * doubt.
+ */
+const IN_TURN_ANSWER_STRENGTH = 0.45;
 /** A turn that is only the name: the shape of the turn corroborates the word. */
 const BARE_ANSWER_STRENGTH = 0.85;
 /** A name in the answer's position, in a turn diarization ran on past the answer. */
@@ -319,7 +326,15 @@ function findNameQuestions(tokenized: TokenizedTurn[]): NameQuestion[] {
  */
 function isBareAnswer(tokens: SpeechToken[], index: number): boolean {
   if (tokens.length > ANSWER_MAX_TOKENS) return false;
-  return tokens.every((token, position) => position === index || ANSWER_FILLERS.has(token.key));
+  // Saying it twice is saying it once, more insistently. "Boris. Boris." used
+  // to fall out of this reading and into the weaker one below, because the
+  // second Boris counted as other content — which made a name repeated worth
+  // less than the same name said once. Nothing here is about any one name:
+  // a token identical to the candidate adds no content to the turn.
+  const answer = tokens[index]!.key;
+  return tokens.every(
+    (token, position) => position === index || token.key === answer || ANSWER_FILLERS.has(token.key),
+  );
 }
 
 /**
@@ -353,7 +368,11 @@ interface AnswerHint {
  * diarized turn. That reading is kept, at much less weight, because the turn's
  * own speaker is only one of the two people it contains.
  */
-function answerHints(tokenized: TokenizedTurn[], questions: NameQuestion[]): Map<string, AnswerHint> {
+function answerHints(
+  tokenized: TokenizedTurn[],
+  questions: NameQuestion[],
+  couldBeName: (tokens: SpeechToken[], index: number) => boolean,
+): Map<string, AnswerHint> {
   const hints = new Map<string, AnswerHint>();
   const remember = (turnIndex: number, tokenIndex: number, hint: AnswerHint) => {
     const key = `${turnIndex}:${tokenIndex}`;
@@ -363,13 +382,23 @@ function answerHints(tokenized: TokenizedTurn[], questions: NameQuestion[]): Map
 
   for (const question of questions) {
     const asked = tokenized[question.turnIndex]!;
+    let answeredInTurn = false;
     asked.tokens.forEach((token, tokenIndex) => {
       if (token.start < question.askedUpTo) return;
+      if (!couldBeName(asked.tokens, tokenIndex)) return;
+      answeredInTurn = true;
       remember(question.turnIndex, tokenIndex, {
-        strength: 0.45,
+        strength: IN_TURN_ANSWER_STRENGTH,
         detail: 'a name answering "what\'s your name?" inside an overlapped turn',
       });
     });
+    // A question gets one answer, and this question already has one. When
+    // diarization glues an exchange into a single turn, the name that follows
+    // the question inside it is the reply; by the next turn the room has moved
+    // on, and a name there belongs to somebody else. Letting both readings
+    // stand gave one question two answers on two different names, which then
+    // argued with each other on the same voice.
+    if (answeredInTurn) continue;
 
     for (let index = question.turnIndex + 1; index <= question.turnIndex + ANSWER_WINDOW_TURNS; index++) {
       const candidate = tokenized[index];
@@ -418,6 +447,15 @@ const SPELLING_CONTEXT_MS = 45_000;
  * one interrupted spelling, arriving minutes apart on different voices.
  */
 const SHORTEST_SPELLED_NAME = 4;
+/**
+ * How long the room is still repeating back the same letters. The in-turn
+ * doubling guard below caught "M A R T M A R T" only while diarization glued
+ * the speller and the person checking into one turn; a join that separates
+ * them correctly hands the identical run to two voices seconds apart, and the
+ * echo is the same echo. Two people who really share a name do not spell it at
+ * each other within seconds, so declining both is the cheap side of the trade.
+ */
+const SPELLING_ECHO_MS = 15_000;
 
 /**
  * People spell names the listener has not caught.
@@ -525,7 +563,18 @@ function spelledRuns(
     }
     flush();
   });
-  return mentions;
+
+  // The same letters coming back on another voice is that voice checking it
+  // heard them right. Which of the two was the correction is exactly what is
+  // unknowable, so neither is claimed.
+  return mentions.filter((mention) => {
+    const spoken = tokenized[mention.turnIndex]!.turn;
+    return !mentions.some((other) => {
+      if (other === mention || other.name !== mention.name) return false;
+      const echo = tokenized[other.turnIndex]!.turn;
+      return echo.speaker !== spoken.speaker && Math.abs(echo.start_ms - spoken.start_ms) <= SPELLING_ECHO_MS;
+    });
+  });
 }
 
 export function extractRawMentions(tokenized: TokenizedTurn[]): RawMention[] {
@@ -533,7 +582,7 @@ export function extractRawMentions(tokenized: TokenizedTurn[]): RawMention[] {
   const nearOrganisationTalk = organisationTalk(tokenized);
   const excluded = (key: string) => nonPersonTokens.has(key);
   const questions = findNameQuestions(tokenized);
-  const hints = answerHints(tokenized, questions);
+  const hints = answerHints(tokenized, questions, (tokens, index) => namePrior(tokens, index, excluded).score > 0);
   const mentions: RawMention[] = [];
 
   tokenized.forEach(({ turn, tokens }, turnIndex) => {
