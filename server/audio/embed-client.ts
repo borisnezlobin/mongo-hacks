@@ -1,8 +1,9 @@
 /** HTTP client for the Python ECAPA sidecar. PCM in, voiceprint out. */
 
 import { VOICEPRINT_DIMS } from '../../shared/contracts'
+import { audioConfig } from './config'
 
-const SIDECAR_URL = () => process.env.SIDECAR_URL ?? 'http://127.0.0.1:8099'
+const SIDECAR_URL = () => audioConfig().sidecarUrl
 
 export interface Embedding {
   vector: number[]
@@ -28,7 +29,7 @@ export async function embedPcm(pcm: Float32Array): Promise<Embedding> {
  * audio instead.
  */
 export async function embedPcmForClustering(pcm: Float32Array): Promise<Embedding> {
-  return post('/embed/unsafe', pcm)
+  return post('/embed/short', pcm)
 }
 
 async function post(path: string, pcm: Float32Array): Promise<Embedding> {

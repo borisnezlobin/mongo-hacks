@@ -93,6 +93,27 @@ export class StreamBuffer {
     this.aliases.set(providerLabel, clusterId)
   }
 
+  /**
+   * Fold one speaker cluster into another, for the consolidation pass.
+   *
+   * Live clustering deliberately errs towards splitting — merging two people is
+   * unrecoverable and splitting one is a tap — so at the end of a session the
+   * over-splits have to be put back together. Turns that were never aliased are
+   * aliased here too: an unaliased turn is its own cluster by default, and it
+   * has to be redirected the same way as the rest.
+   */
+  remapCluster(from: string, to: string): void {
+    if (from === to) return
+    for (const [label, cluster] of this.aliases) {
+      if (cluster === from) this.aliases.set(label, to)
+    }
+    for (const segment of this.segments) {
+      if (!this.aliases.has(segment.speaker) && segment.speaker === from) {
+        this.aliases.set(segment.speaker, to)
+      }
+    }
+  }
+
   /** Provider turns not yet assigned to a cluster, oldest first. */
   unaliasedTurns(): Segment[] {
     const seen = new Set<string>()
@@ -187,6 +208,40 @@ export class StreamBuffer {
    */
   audioFor(sessionSpeaker: string): Float32Array {
     return this.concatSegments(this.segments.filter((s) => this.resolve(s.speaker) === sessionSpeaker))
+  }
+
+  /**
+   * Words whose midpoint falls inside a span, in order.
+   *
+   * The final pass needs these to re-cut an utterance at a speaker boundary:
+   * dividing the text by character count would put the split in the wrong
+   * place, and the midpoint rule is the same one the live join already uses, so
+   * a re-cut line reads exactly as it would have if the boundary had been known
+   * all along.
+   */
+  wordsIn(startMs: number, endMs: number): Word[] {
+    return this.words
+      .filter((word) => {
+        const midpoint = (word.start_ms + word.end_ms) / 2
+        return midpoint >= startMs && midpoint < endMs
+      })
+      .map((word) => ({ ...word }))
+  }
+
+  /** The time spans one session speaker holds, for pooling and for scoring. */
+  spansFor(sessionSpeaker: string): { start_ms: number; end_ms: number }[] {
+    return this.segments
+      .filter((segment) => this.resolve(segment.speaker) === sessionSpeaker)
+      .map((segment) => ({ start_ms: segment.start_ms, end_ms: segment.end_ms }))
+  }
+
+  /**
+   * Concatenated PCM for arbitrary spans, for the final diarization pass. Those
+   * spans come from a different service with its own labelling, so they cannot
+   * be looked up through the alias table like everything else here.
+   */
+  audioForSpans(spans: { start_ms: number; end_ms: number }[]): Float32Array {
+    return this.concatSegments(spans.map((span) => ({ speaker: '', ...span })))
   }
 
   private concatSegments(segments: Segment[]): Float32Array {

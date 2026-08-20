@@ -60,7 +60,9 @@ describe('OpenAI Realtime provider', () => {
     expect(connectedUrl).toBe('wss://api.openai.com/v1/realtime?intent=transcription')
     expect(config.session.type).toBe('transcription')
     expect(config.session.audio.input.format.rate).toBe(24_000)
-    expect(config.session.audio.input.transcription.model).toBe('gpt-4o-transcribe-diarize')
+    // Not the diarizing model: realtime refuses it on this entitlement, so
+    // speaker labels come from the batch final pass instead. See config.ts.
+    expect(config.session.audio.input.transcription.model).toBe('gpt-4o-transcribe')
     const append = JSON.parse(socket.sent[1])
     expect(append.type).toBe('input_audio_buffer.append')
     expect(Buffer.from(append.audio, 'base64')).toHaveLength(2400 * 2)

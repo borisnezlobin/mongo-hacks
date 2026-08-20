@@ -9,9 +9,11 @@
  * voiceprint is close to a coin flip.
  *
  * Clustering moves the hard comparison. Turns within one session share a
- * speaker, a microphone, and a room, so telling them apart is easy: measured on
- * our own fixture, within-speaker cosine bottomed at 0.758 while cross-speaker
- * peaked at 0.259. Only once a cluster has pooled enough audio do we make the
+ * speaker, a microphone, and a room, which is the easier half of the problem —
+ * though not as easy as a synthetic fixture once suggested. On
+ * fixtures/real/dorm-9pm.wav per-segment cosine is 0.329 same-speaker against
+ * 0.162 cross-speaker, so single turns still separate badly and only pooling
+ * makes the picture clear. Once a cluster has pooled enough audio we make the
  * genuinely hard cross-session, cross-channel comparison against enrolled
  * people — once, with plenty of speech, instead of per turn with almost none.
  *
@@ -22,13 +24,23 @@
  * database, no audio handling.
  */
 
-import { VOICEPRINT_DIMS } from '../../shared/contracts'
+import { SESSION_LINK_THRESHOLD, VOICEPRINT_DIMS } from '../../shared/contracts'
 
 /**
  * Below this, a turn may join an existing cluster but may never start a new
  * one. Short embeddings are informative enough to say "that sounded like Ann"
  * and far too noisy to say "that was nobody we have heard yet" — letting them
  * open clusters is how one speaker shatters into six.
+ *
+ * Left at 1.5s after re-measuring on real room audio, deliberately. The
+ * pooling numbers argue that a 1.5s embedding is barely better than a coin
+ * flip, which looks like an argument for raising this — but the two errors are
+ * not symmetric. A spurious cluster splits one person in two, which the user
+ * fixes with a merge; a missing cluster folds two people into one, and every
+ * fact either of them states is then filed under the wrong name, silently and
+ * permanently. Since the link threshold below just dropped from 0.5 to 0.25,
+ * absorbing (and therefore conflating) already got easier; raising this bar as
+ * well would push both dials the same, dangerous way.
  */
 export const MIN_NEW_CLUSTER_MS = 1_500
 
@@ -42,17 +54,24 @@ export const MIN_NEW_CLUSTER_MS = 1_500
 export const MIN_EMBED_MS = 250
 
 /**
- * Cosine below which a turn is considered a different speaker. Deliberately
- * well under the within-speaker floor we measured and well over the
- * cross-speaker ceiling; the gap in single-session audio is wide enough that
- * this does not need to be delicate.
+ * Cosine below which a turn is considered a different speaker.
+ *
+ * Now sourced from contracts. The old 0.5 came from a synthetic TTS fixture
+ * where within-speaker cosine bottomed at 0.758; on fixtures/real/dorm-9pm.wav
+ * per-segment cosine is 0.329 same-speaker against 0.162 cross-speaker, so 0.5
+ * linked essentially nothing and every turn became its own speaker.
+ * SESSION_LINK_THRESHOLD sits between the two measured means. Turns are
+ * compared against a pooled cluster centroid rather than another single turn,
+ * which is cleaner than either number suggests.
  */
-export const LINK_THRESHOLD = 0.5
+export const LINK_THRESHOLD = SESSION_LINK_THRESHOLD
 
 /**
  * How close in time an unembeddable turn has to be to a cluster to inherit it.
  * A backchannel lands inside the pause of the person it answers, so proximity
- * is the only cue available and it is a decent one at this range.
+ * is the only cue available and it is a decent one at this range. Unchanged by
+ * the dorm-9pm re-measurement: that evidence is about embeddings, and says
+ * nothing about conversational timing.
  */
 export const ADJACENCY_WINDOW_MS = 1_200
 
