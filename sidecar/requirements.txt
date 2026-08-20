@@ -1,6 +1,7 @@
 torch
 torchaudio
 speechbrain
+pyannote.audio
 fastapi
 uvicorn
 numpy

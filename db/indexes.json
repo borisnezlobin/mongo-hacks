@@ -44,6 +44,26 @@
   ],
   "collectionIndexes": [
     {
+      "collection": "people",
+      "keys": {"owner_id": 1, "name": 1},
+      "options": {"name": "people_by_name"}
+    },
+    {
+      "collection": "people",
+      "keys": {"owner_id": 1, "is_owner": 1},
+      "options": {"name": "people_owner"}
+    },
+    {
+      "collection": "conversations",
+      "keys": {"owner_id": 1, "started_at": -1},
+      "options": {"name": "conversations_recent"}
+    },
+    {
+      "collection": "conversations",
+      "keys": {"owner_id": 1, "participant_ids": 1},
+      "options": {"name": "conversations_by_participant"}
+    },
+    {
       "collection": "facts",
       "keys": {"owner_id": 1, "primary_source_utterance_id": 1, "claim_normalized": 1},
       "options": {"name": "facts_idempotency", "unique": true}
@@ -52,6 +72,16 @@
       "collection": "facts",
       "keys": {"owner_id": 1, "person_id": 1, "attribute": 1, "superseded_by": 1},
       "options": {"name": "facts_current_by_attribute"}
+    },
+    {
+      "collection": "facts",
+      "keys": {"owner_id": 1, "superseded_by": 1, "superseded_at": -1},
+      "options": {"name": "facts_supersession_recent"}
+    },
+    {
+      "collection": "facts",
+      "keys": {"owner_id": 1, "embedding_pending_since": 1},
+      "options": {"name": "facts_embedding_backfill", "sparse": true}
     },
     {
       "collection": "promises",
@@ -82,6 +112,11 @@
       "collection": "reminders",
       "keys": {"owner_id": 1, "status": 1, "fire_at": 1},
       "options": {"name": "reminders_scheduled"}
+    },
+    {
+      "collection": "reminders",
+      "keys": {"owner_id": 1, "promise_id": 1},
+      "options": {"name": "reminders_by_promise"}
     }
   ]
 }

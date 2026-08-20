@@ -1,0 +1,77 @@
+{
+  "_comment": [
+    "Acceptance questions for the 48-minute, 7-person conversation, written by reading",
+    "the transcript by hand before any of the retrieval work landed. They exist so that",
+    "'semantic search works' can be checked instead of asserted.",
+    "",
+    "'expect' lists things a correct answer should contain, in substance rather than",
+    "wording. 'must_not' lists specific confabulations to watch for. These are for",
+    "JUDGING answers, never for tuning retrieval: any code that references them is a bug.",
+    "",
+    "The conversation is gitignored personal data. Keep quotes here short."
+  ],
+  "conversation": "dorm-40min",
+  "people": ["Boris", "Tarun", "Joshua", "Vova", "Mert", "Clara", "Dhruv"],
+  "checks": [
+    {
+      "q": "What did we talk about?",
+      "why": "The broad-scope case with no rankable terms. Every word is a stop word, so relevance ranking alone returns nothing useful; this needs coverage across the whole conversation.",
+      "expect": ["introductions", "majors or classes", "startups", "dorm logistics"],
+      "must_not": ["a single narrow topic presented as the whole conversation"]
+    },
+    {
+      "q": "Who was in this conversation?",
+      "why": "Participant recall. Seven people, several introduced mid-conversation.",
+      "expect": ["several of the seven named people"],
+      "must_not": ["people who were only mentioned, not present, e.g. Alara, Omer, Ben, Durov, Zelensky"]
+    },
+    {
+      "q": "What is Mert studying?",
+      "why": "A fact stated once, early, by the person himself.",
+      "expect": ["applied math", "industrial engineering and operations research"],
+      "must_not": ["English", "computer science"]
+    },
+    {
+      "q": "Tell me about the Turkish guy's startup.",
+      "why": "Retrieval by description rather than by name — the user often will not remember the name, which is the entire premise of the product.",
+      "expect": ["synthetic data", "open source", "named after the Turkish word for cat"],
+      "must_not": []
+    },
+    {
+      "q": "Who is Alara?",
+      "why": "A person discussed but not present. Must not be added to the participant list.",
+      "expect": ["girlfriend", "moving in", "Unit 2"],
+      "must_not": ["described as someone in the room"]
+    },
+    {
+      "q": "What is Joshua studying?",
+      "why": "A one-word answer buried in crosstalk, stated in reply to a direct question.",
+      "expect": ["English"],
+      "must_not": ["applied math"]
+    },
+    {
+      "q": "Which class is changing its programming language?",
+      "why": "A specific detail with no proper noun in the question.",
+      "expect": ["61A"],
+      "must_not": []
+    },
+    {
+      "q": "What did Boris say about his dad?",
+      "why": "Per-person attribution over a long anecdote. Tests that 'what X said' returns X's own words rather than what was said near X.",
+      "expect": ["professor", "St Petersburg", "Durov"],
+      "must_not": []
+    },
+    {
+      "q": "Who has a sister at Cal Poly?",
+      "why": "Attribution of a single passing remark to the right speaker — the case most likely to be filed under the wrong person.",
+      "expect": ["a named person, or an honest statement that the speaker is uncertain"],
+      "must_not": ["a confident wrong name"]
+    },
+    {
+      "q": "What did we decide about the ski trip?",
+      "why": "The control. No ski trip was ever discussed. Refusing must beat inventing, because a confident invented fact about a real friend is the worst failure this product has.",
+      "expect": ["says it does not have this"],
+      "must_not": ["any invented detail about a ski trip"]
+    }
+  ]
+}
