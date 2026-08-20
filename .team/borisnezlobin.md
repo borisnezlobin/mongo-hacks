@@ -23,7 +23,18 @@ conversation clips — we can never ask someone we just met to record a sample.
 
 ## Heads up
 
-- `shared/contracts.ts` gained `speaker_pending` and `conversation` events.
+- `shared/contracts.ts` gained `speaker_pending` and `conversation` events, and
+  now `UtteranceEvent.superseded` — the final pass rebuilds the transcript from
+  a whole-file transcription and a handful of live lines have no counterpart in
+  it. A client that ignores the flag will show stale rows under a corrected
+  transcript; `app/src/state/reducer.ts` drops them.
+- **Speaker attribution is pyannote now.** The final pass transcribes the
+  retained WAV with whisper, diarizes it with `pyannote/speaker-diarization-3.1`
+  in the sidecar, and joins the two at word level. `diarize-client.ts` and
+  `label-stitch.ts` are deleted, `attribute-recording.ts` is rewritten, and
+  `AUDIO_FINAL_PASS` is now on/off rather than diarize/whisper. The sidecar
+  needs `HF_TOKEN` for the gated weights and reports `diarization` on
+  `/health`; without it identity still works and the final pass declines.
 - **`POST /replay/start` is gone.** It wrote invented conversations and people
   into the real database. Use `bun run eval:attribution` instead — it measures
   the pipeline offline without touching anyone's data.
@@ -36,3 +47,321 @@ conversation clips — we can never ask someone we just met to record a sample.
   conversations and 4 real people remain.
 - `app/src/lib/store.tsx` gained `attributing`, `renamedConversations` and
   `avatars` state, and now exports `reduce` for tests.
+- **`GET /review` exists**: a local-only transcript review page, registered from
+  `server/index.ts` (one added import and one `registerReviewRoutes(app, deps)`
+  line). Everything else it needs lives in `server/review/`. Click a line and it
+  plays that span of the wav — spans are cut by byte offset out of the source
+  file and served as their own small wav, which is why a click 39 minutes into
+  the recording still starts in single-digit milliseconds. The owner's
+  corrections go to `eval/real/corrections.json`, which is gitignored
+  (`.gitignore:43`, confirmed with `git check-ignore`), and the writer refuses
+  to write anywhere git can see. Do not expose this server: the page serves real
+  speech and the corrections quote it.
+- `eval/owner-corrections.ts` turns those corrections into landmarks and span
+  reference, and `eval/diarization.mts` prints them. `eval/landmarks.ts` is
+  untouched — folding the generated set into `checkLandmarks` would be a
+  one-line signature change (`checkLandmarks(recording, segments, landmarks =
+  LANDMARKS)`), worth doing next time that file is open. Until then
+  `mergedLandmarks()` does the merge, including folding case, because
+  `landmarks.ts` writes 'volva' and the app writes 'Volva'.
+- **The review page can now split a line and undo a ruling.** Two fixes worth
+  knowing about beyond the features. First, saving a correction no longer
+  answers 409: amending your own earlier ruling was being treated as a
+  contradiction, so once you had edited a line's words you could not edit them
+  again *or confirm the line as-is*. Supersession is not disagreement.
+  Contradictions with `eval/landmarks.ts` are still recorded and shown, but as a
+  banner beside the line with undo next to it, never a dialog that refuses the
+  write. Second, a landmark name is only compared against a correction when this
+  conversation actually knows that name — `landmarks.ts` spells the Ukrainian
+  "volva" and the pipeline guessed "Vova", which flagged a false contradiction
+  on every line he speaks. Rename the person and real mismatches surface again.
+- Splits are stored separately from corrections because they claim something no
+  per-line attribution can: *a speaker change happened here*. `ownerBoundaries()`
+  and `scoreBoundaries()` in `eval/owner-corrections.ts` measure that against a
+  system's emitted turn boundaries, which is a number this repo could not
+  produce before — pyannote scores 0/2 on the first split line, delivering
+  18.22-24.38 s as a single turn. Cuts are stored as the silence they sit in,
+  not as an instant, because nothing in the audio narrows it further.
+- **The review page now leads with what is worth most, not with 00:00.** Three
+  things landed. (1) Same-or-different questions from `ground-truth.json`'s
+  `to_resolve`: one answer settles ~457s, where a line correction settles a
+  line. `server/review/questions.ts` builds them; note the builder writes clips
+  for the FIRST label only and `at` is the clip start, and resolving those
+  timestamps by containment returns the wrong labels (0:A and 0:G for a question
+  about 0:E) because segments overlap — only an exact start match is correct.
+  The rival side's clips are chosen here. (2) A prioritised queue
+  (`server/review/queue.ts`), default, with sequential one click away. (3)
+  Correction anchoring (`server/review/anchor.ts`) re-keys by time and words
+  instead of line id, and refuses to merge two disagreeing corrections onto one
+  line — the thing that only worked last time because both happened to say Volva.
+- Two ranking signals were measured and **dropped**: `overlappedWords > 0` fires
+  on 75% of lines and "spans more than one pyannote speaker" on 70%, so neither
+  ranks anything, and `identity_confidence` is the literal constant 'confirmed'
+  on every stored line. What survived is speaker deficit weighted by speech
+  held, the top-two speaker margin (p10 0.00, p50 0.56, p90 1.00), turns under a
+  second, and timeline spread. The queue is two-phase: a voice with no ground
+  truth is offered its longest, cleanest turns, because a 300ms "yeah." cannot
+  identify a stranger; once pinned, short and contested turns rank up instead.
+- `identityLandmarks()` uses union-find over the `same` answers. Do not make it
+  per-question: all three questions here share one rival label, so per-question
+  identities stamped contradictory names on identical spans and demanded a span
+  differ from itself.
+- **Identity answers are anchored to audio spans, not cluster ids.** The
+  questions come from `ground-truth.json`, whose labels (`0:E`, `950:E`) are
+  chunk-scoped names from the retired provider; the product now emits global
+  SPEAKER_00..07. Each answer therefore stores `compared` — the two stretches he
+  was actually played — and `identityLandmarks` does union-find over span keys,
+  producing identities like `voice@1696.1s`. Verified the constraints are
+  byte-identical with the question set present and with it removed entirely, so
+  regenerating the question set cannot silently delete his answers. `label_a` /
+  `label_b` stay on the record as provenance and must never be keyed on.
+- An answer constrains **only the two stretches he heard**, not all three clips
+  a side. The clips on one side are one voice only according to the retired
+  clustering, and these clusters are in the question set precisely because that
+  clustering marked them impure — grouping them would answer the question being
+  asked. Fewer constraints, all of them his.
+- `worth_seconds` is an estimate from the retired clustering's span assignment,
+  and the UI now says so. Do not quote it as a measurement.
+- **The review page is responsive now; he was using it on a phone.** One
+  stylesheet with a `max-width: 760px` block, not a second page. On a small
+  screen the identity question comes first (it is the best thing on a phone:
+  two clips, three buttons), the roster and coverage strips become single-line
+  scrollers, the transcript drops to a two-column grid with the text clamped to
+  two lines until selected, and the panel becomes a capped bottom sheet whose
+  speaker picker is one swipeable row instead of eight full-width ones. Every
+  keyboard shortcut has a button — `prevLine`/`nextLine`/`editWords` were added
+  for the ones that had none — and `server/review/page.test.ts` asserts that,
+  because keyboard-only affordances are what made it unusable.
+- **`clock()` was declared twice in the page script**, once taking milliseconds
+  and once taking seconds. Declarations hoist, so the later one silently won
+  every call site and the picker printed "12562m10s" for a voice in a 48-minute
+  recording. Duration formatting now lives in `server/review/format.ts` as
+  `msToClock` / `secondsToClock`, is injected into the page from there so there
+  is one implementation, and a test fails on any duplicate function declaration
+  in the page script.
+- Watch for backticks in comments inside `page.ts`: the page is a `String.raw`
+  template, so a backtick in a comment terminates it. `tsc` catches it, but the
+  error points at the wrong line.
+- **Rulings advance the queue now.** Nothing did before: every handler saved and
+  returned, leaving him on the line he had just finished with no signal it had
+  worked — on a phone, indistinguishable from a failed save. Terminal actions
+  (naming the speaker, Correct as-is, recording a split, answering a question)
+  save and move to the next unruled line, autoplay it, and report what was saved
+  plus why the next one is being asked. **Saving words is deliberately not
+  terminal** — editing text then naming the speaker is two rulings on one line,
+  so words save in place and ask for the speaker, unless the speaker is already
+  settled. Undo never advances and walks back to the line his last ruling landed
+  on, because by then he is standing on the next one.
+- Running out of queue shows a card offering the voice questions or a read in
+  order, rather than silence. On a phone the page now opens on the questions and
+  the line list is a header toggle away.
+- Watch out: a `page.ts` edit that silently does not match is invisible — the
+  first attempt at the advance handlers replaced nothing and typechecked clean,
+  and only driving the page caught it. Assert on every string replacement.
+
+## Cross-recording identity, measured (2026-08-20)
+
+Measurement only — nothing shipped changed, and `shared/contracts.ts` was not
+touched. New tools all live in `eval/real/`:
+
+- `cross-session-identity.mts` plays all four real recordings through the
+  shipped `assignClusters` in order and prints the people the product would
+  have ended up with. **0 false merges** at every threshold from 0.55 to 0.75.
+- `model_transfer.py` scores pooled clips across recordings, over a ladder of
+  pool sizes and three embedder lineages. With the shipping ECAPA, cross-
+  recording only, 1,620 trials:
+    8 s   same p5 0.325 median 0.541  |  different max 0.513  -> 97% missed at 0.68
+    20 s  same p5 0.587 median 0.712  |  different max 0.621  -> 33% missed at 0.68
+    60 s  same p5 0.781 min    0.764  |  different max 0.627  ->  0% missed, 0% false
+  `ATTRIBUTION_THRESHOLD` 0.68 is right, and sits in the middle of the 60 s gap.
+  `CONFIRMED_SPEECH_MS` at 20 s is not: it was measured inside one recording,
+  where both sides share a room, and cross-recording linking needs about 60 s.
+  Do not change the constants on this alone — the argument is in the report.
+- `cluster_pools.py` builds pooled-AUDIO voiceprints per cluster, which is what
+  the product holds.
+- **Correction to an earlier claim of mine.** I first reported that averaging
+  per-turn vectors is worse than embedding the joined audio (0.44 versus 0.72,
+  same person, same seconds). Measured properly with `pooled_construction.py`,
+  which holds members, seconds and queries fixed and varies only the joining,
+  the two are equal — concat never beat mean on AUC at any clip length or pool
+  size. The real variable is **how many members the average has**: every
+  turn-averaged model with 50+ turns scores 0.86-0.95 against the same person in
+  another recording, and the only ones that collapse are dorm-9pm's, which have
+  7-15 turns behind them. Averaging is fine; averaging almost nothing is not.
+  `pooled_floor.py` was never at risk — it averages 4-20s SPAN embeddings, not
+  turn vectors, and its duration floor is unmoved.
+- `turn_embeddings.py` gained `TURNEMB_SUFFIX` so a second embedding model no
+  longer silently overwrites the wespeaker cache every other script reads.
+
+Two identities were recovered from the transcript rather than from voices, and
+want confirming: **jerry-45min/SPEAKER_04 is Boris** (says "Jerry" to somebody
+else six times) and **jerry-45min/SPEAKER_03 is Tarun** (says "Boris" to
+somebody else three times, and matches the owner-labelled Tarun spans at 0.88).
+Tarun in the Jerry recording is a fourth appearance nobody had recorded.
+
+### What the speech-duration constants actually gate (2026-08-20)
+
+Read the call sites before acting on the turn-length statistics. It is true that
+~80% of turns and ~30% of speech are under 3 s (counted independently, the
+numbers reproduce exactly). It is **not** true that `EMBED_MIN_MS` drops them.
+Both attribution paths gate the speaker's POOLED speech, not the turn:
+
+- `server/audio/session.ts:501,511` live pass — `speakersOverFloor(embedMinMs)`
+  and `buffer.speechMsFor(speaker)`, then embeds `buffer.audioFor(speaker)`.
+- `server/audio/session.ts:999` final pass — `speechMs.get(speaker)`, then
+  embeds `audioForSpans(spans)` over all of that speaker's clean turns.
+
+So a speaker with thirty sub-second turns totalling 25 s clears the gate on the
+pool. `EMBED_MIN_MS` only excludes a person whose entire pooled speech in the
+session is under 3 s. Short turns are not unattributed — they inherit their
+cluster's identity. The thing that actually misfiles them is the diarization
+putting them in the wrong cluster, which is the within-recording clustering
+problem, not this constant.
+
+`PROVISIONAL_SPEECH_MS = 8_000`: defensible within a session, unusable across
+recordings. At 8 s of pooled speech on each side, cross-recording same-person
+cosine is p5 0.325 / median 0.541 against a different-person max of 0.513 —
+**97.5% of genuine links missed at 0.68**, and no threshold separates them.
+Anything cross-session needs ~60 s.
+
+### ECAPA vs wespeaker at pooled assignment — settled, no change warranted
+
+`eval/real/short_query_assignment.py` runs both on byte-identical audio, the
+identical pool membership, identical query cuts and the identical held-out rule
+(every clip list is chosen before any model is loaded). Gallery of 7 voices,
+top-1 % on dorm-40min, n=80 per cell so read ±5:
+
+  pools                      model      0.5s   1s    2s    3s
+  reference, uncapped ~176s  ECAPA       81    69    91    90
+  reference, uncapped ~176s  wespeaker   68    70    89    91
+  reference, capped 20s      ECAPA       56    52    69    74
+  reference, capped 20s      wespeaker   55    58    70    71
+  cluster-built 20s          ECAPA       46    45    51    55
+  cluster-built 20s          wespeaker   40    35    38    42
+
+Within a few points everywhere, neither ahead consistently. The 88-vs-70 gap
+that prompted this was not the embedder — it was pool size and gallery
+composition. **Do not switch what we embed with; there is nothing there.**
+
+Worth knowing while reading the above: **ECAPA is already the shipping identity
+embedder** (`sidecar/app.py` loads `speechbrain/spkrec-ecapa-voxceleb`,
+`EMBED_DIMS = 192`, matching `VOICEPRINT_DIMS`). wespeaker is the eval tooling's
+default `SPK_MODEL` and what pyannote-3.1 clusters with internally. So the seam
+is real — diarization clusters with one model, identity stores another — but the
+two measure as equivalent at this task, so it is not currently costing anything.
+
+What the same table shows about pools: **size dominates cleanliness.** Capping
+clean pools from ~176 s to 20 s costs 25 points at 0.5 s (81 -> 56); making them
+dirty costs a further ten (56 -> 46). Confidently-wrong stays at 0-5% in every
+cell and is 0% at 0.5-1 s, and at `ATTRIBUTION_THRESHOLD` 0.68 essentially
+everything under 1 s abstains rather than guessing.
+
+### The duplicate-person problem: proposal, not built (2026-08-20)
+
+Measured first. Three results decide the shape, and the second one moves the
+fix somewhere other than where it looks like it belongs.
+
+**1. A floor on minting is the wrong lever — measured with `eval/real/floor_cost.py`.**
+Pooled speech per diarization cluster, all four recordings, 21 clusters:
+
+  floor    clusters clearing it      share of speech
+    8s     21 of 21 (100%)               100%
+   20s     20 of 21 ( 95%)              99.7%
+   60s     14 of 21 ( 67%)              95.1%
+  120s      9 of 21 ( 43%)              88.0%
+
+A 60 s mint floor leaves a third of voices permanently unresolved, and **all
+three people in dorm-9pm never clear it** — a three-minute conversation would
+end with nobody identified at all. Even for those who do clear it the wait is
+7-20 minutes into the conversation (Boris hits 60 s at 7.7 min in dorm-40min,
+11.1 min in mentra-mtg). The distribution behind the floor is right; the floor
+is wrong.
+
+**2. Only the ENROLLED side needs the speech.** `model_transfer.py` now reports
+the asymmetric matrix. Cross-recording, ECAPA, miss rate at 0.68:
+
+  enrolled \ query      20s        60s       120s
+        20s          18.5%       1.7%       1.7%
+        60s           1.7%       0.0%       0.0%
+       120s           1.7%       0.0%       0.0%
+
+False accept is **0.0% in every cell**. The 18-33% miss figure I reported was
+20s against 20s — both sides starved. A print backed by 60 s recognises a 20 s
+cluster with 1.7% miss. So the bar belongs on **what gets stored as a
+voiceprint**, not on when a person may be created.
+
+**3. Eviction throws away the best evidence.** `selectEvictions`
+(`matcher.ts:251`) sorts by `created_at` only; `EvictablePrint` does not even
+carry `duration_ms`. So a 300 s print from a long dinner is evicted before a
+20 s print from last week, and by the table above that swap is worth ~17 points
+of miss rate.
+
+**Proposed shape, for review before anything is written:**
+
+- Keep minting where it is (`CONFIRMED_SPEECH_MS`). A person minted from 20 s is
+  correct *within* the session, and the session is where facts are filed.
+- Gate `reinforce` on `CROSS_SESSION_SPEECH_MS` instead: below 60 s of pooled
+  speech, do not store a print. A weak print is what causes next session's
+  duplicate, so not storing one is strictly better than storing one.
+- Make `selectEvictions` prefer keeping the longest-pooled prints, not the
+  newest. Needs `duration_ms` on `EvictablePrint`; no new constant.
+- Reconcile after the fact rather than withholding. `mergePeople` already does
+  the hard part correctly (keeps oldest, re-points voiceprints, utterances,
+  facts and promises, deletes losers, re-emits identity per conversation). With
+  0% false accept across every pool size measured, a periodic pairwise sweep
+  over people's prints can surface duplicates for one-tap confirmation with
+  near-zero risk of proposing a wrong merge.
+- `namePerson` should keep overriding all of it. It already stores an enrolled
+  print at any duration and enrolled prints are never evicted — that is correct
+  and is the escape hatch for everybody who speaks for thirty seconds and leaves.
+
+Open question I could not settle by measurement: whether the merge sweep should
+propose or act. 0% false accept was measured on 10 labelled voices in 4
+recordings, which is not enough to justify acting unattended.
+
+### Built: what earns a voiceprint, what gets evicted, and a merge sweep (2026-08-20)
+
+`server/identity/**` only. Suite 894 passed / 5 skipped (was 880/5), `tsc` clean.
+
+- **`reinforce` gated on `CROSS_SESSION_SPEECH_MS`**, with one exception that is
+  not a hedge: a person with NO print always gets one, whatever the duration.
+  The asymmetric matrix says a 20 s print still recognises a 60 s cluster at
+  1.7% miss, while no print misses 100% and guarantees the duplicate the gate
+  was meant to prevent. Something beats nothing. The contract comment's
+  "declining to store one is strictly better than storing it" is true only when
+  the person already has one — worth a word when you next touch it.
+- **`storePrint` split out of `reinforce`** so the create path is typed as
+  always producing an id. `AttributionResult.voiceprint_id` stays required and
+  `server/audio/session.ts` needed no change.
+- **`selectEvictions` drops the thinnest print, not the oldest**, tie-broken by
+  age. `EvictablePrint` gains `duration_ms`.
+- **`insertPrint` never evicts the print it just wrote.** Without this, storing
+  a print for somebody whose existing prints all hold more speech deleted it
+  inside the same call and left every utterance in the session pointing at a
+  voiceprint that no longer existed. Recency also carries the only estimate of
+  the room the speaker is in now.
+- **`server/identity/duplicates.ts`** — `mergeCandidates`, pure, read-only,
+  exposed as `GET /people/duplicates`. `POST /people/merge` remains the only
+  writer. Skips pairs the owner has given different names.
+
+**Measured after, on the four recordings.** Prints written: 20 before, 20 after
+— the gate never fired here because almost every cluster is somebody's first
+print. **0 of 17 people end up with no print; no cluster loses identifiability**,
+so this is not your floor one step later. The rule bites only in a mature store,
+where a known person speaks briefly: 6 of 21 clusters sit in the 20-60 s band.
+
+**The sweep needed a guard, and the run is why.** With no minimum evidence it
+proposed **Boris + Tarun at 0.681** — both prints from dorm-9pm, under a minute
+each. The zero-false-accept result was measured on models holding at least 20 s
+of pooled audio and does not extend below that, so `mergeCandidates` now
+requires one side backed by `CROSS_SESSION_SPEECH_MS`. That drops the wrong pair
+and keeps every genuine one, since a real duplicate always has one record built
+from a long conversation. Remaining proposals: 6, all between clusters *inside
+one recording* — i.e. the sweep is currently surfacing diarization splits rather
+than cross-session duplicates, which is the within-recording clustering problem
+again.
+
+Not built, flagged instead: `applyDecision`'s no-match branch mints even when a
+claim already owns those utterances, so an eviction mid-conversation could still
+produce a same-conversation duplicate. Pre-existing, not introduced here, and it
+changes minting — your call.

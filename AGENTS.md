@@ -161,7 +161,9 @@ Never edit another lane's tree, rebase a lane branch, or rewrite another contrib
 ### Lane A: audio and identity
 
 - Use a monotonic sample cursor as the only audio clock.
-- Assign words to diarization segments by word-midpoint containment.
+- Assign each word to the speaker turn holding most of it, one word at a time. A
+  transcription segment routinely spans a speaker change, so attributing whole
+  segments hands one person the other's words.
 - Emit revisions only in the audio spine; downstream systems replace by `utterance_id`.
 - Replay `fixtures/conversation.wav` through the same StreamBuffer path as live audio.
 - Accumulate at least 3 seconds per session speaker before embedding.

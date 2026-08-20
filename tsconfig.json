@@ -25,7 +25,11 @@
     "db/**/*.mts",
     "app/**/*.ts",
     "app/**/*.tsx",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "eval/**/*.ts",
+    "eval/**/*.mts",
+    "tools/**/*.ts",
+    "tools/**/*.mts"
   ],
   "exclude": ["node_modules"]
 }
