@@ -469,3 +469,9 @@ to a measurement without saying so in the result.
   now says so: the replay button turns primary and reads "Tap to play this
   line", so a silent card reads as tappable rather than broken. Verified by
   stubbing `play()` to reject with NotAllowedError; it recovers on the next card.
+- A skip now leaves a one-line receipt on the *next* card — "Saved for a laptop
+  session." — with nothing to dismiss and nothing to answer. Without it,
+  skipping reads as discarding and gets under-used, and a skipped line is one he
+  has told us is hard. It is only shown after the write actually succeeds; if
+  the write fails the card says "That one could not be saved — it will come
+  round again" and the line is put back rather than silently dropped.
