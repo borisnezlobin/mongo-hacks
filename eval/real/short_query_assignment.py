@@ -12,8 +12,13 @@ Three things are varied, because each of them is a way to fool yourself:
                  clusters from OTHER recordings, so they are unambiguously
                  different people -- which also makes them acoustically easier
                  to reject than a roommate would be. Read the numbers as an
-                 upper bound for that reason, and see `--distractors same` for
-                 the pessimistic variant.
+                 upper bound for that reason.
+                 Worse: several distractors come from mentra-mtg, where Alex,
+                 David and Brendan were all REMOTE, so SPEAKER_00 is a laptop
+                 speaker rather than a person and sits near-orthogonal to every
+                 in-room voice. Rejecting it is trivially easy and measures
+                 channel separation, not speaker separation. The gallery-size
+                 numbers are optimistic by an unmeasured amount because of it.
   pool source    reference   pools built from owner-labelled spans: clean, and
                              NOT something the product can build
                  cluster     pools built from the diarization's own clusters,

@@ -37,8 +37,10 @@ from pool_size_sweep import cluster_labelled  # noqa: E402
 #   dorm-40min/04, dorm-40min/06   owner reference spans, 0.92 and 0.59 purity
 #   dorm-9pm/01,02,03              owner-verified landmarks in eval/landmarks.ts
 #   jerry-45min/04                 says "Jerry" to somebody else six times
-#   jerry-45min/03                 says "Boris" to somebody else three times, and
-#                                  "Jerry" twice, leaving the third participant
+#   jerry-45min/03                 OWNER-CONFIRMED as Tarun (he identified the GBO
+#                                  check-in line). The vocative argument that first
+#                                  suggested it -- says "Boris" to somebody else --
+#                                  only EXCLUDES Boris; it never identified anyone
 #   mentra-mtg/02                  "Amelia, our MongoDB hackathon project", said
 #                                  by the person whose project it is
 PEOPLE = {

@@ -42,11 +42,28 @@ import { mergeCandidates } from '../../server/identity/duplicates'
 const RECORDINGS = ['dorm-9pm', 'dorm-40min', 'jerry-45min', 'mentra-mtg'] as const
 
 /**
- * Cluster -> person, strongest provenance first:
- *   dorm-9pm       eval/landmarks.ts, owner-verified lines
- *   dorm-40min     owner reference spans, by majority overlap
- *   jerry-45min    the cluster addresses that person by name, so is not them
- *   mentra-mtg     the speaker calls Amelia "our hackathon project"
+ * Cluster -> person, strongest provenance first. These are NOT equally good and
+ * the difference has already cost one wrong report, so the tier is recorded:
+ *
+ *   OWNER-CONFIRMED
+ *     dorm-9pm/*            eval/landmarks.ts, lines the owner identified
+ *     jerry-45min/03        the owner confirmed Tarun said the GBO check-in line
+ *   REFERENCE SPANS, and they contradict him in places
+ *     dorm-40min/*          by majority overlap. The reference calls the line he
+ *                           identified as Dhruv "tarun" and the one he identified
+ *                           as Clara "boris"; prefer eval/landmarks.ts on conflict
+ *   HYPOTHESIS, from the transcript alone
+ *     jerry-45min/04        addresses "Jerry" six times, so is not Jerry. Also
+ *                           matches the landmark-grounded dorm-9pm/boris at 0.788
+ *     mentra-mtg/02         calls Amelia "our hackathon project"
+ *     mentra-mtg/00, /03    see the mentra-mtg warning below
+ *
+ * mentra-mtg is TWO PHYSICAL SOURCES, not five people: Alex, David and Brendan
+ * were all remote, so SPEAKER_00 is a laptop speaker carrying three of them and
+ * scores near-orthogonally to every in-room voice. Naming it "alex" is a
+ * convenience; it is a channel. Do not read anything here as evidence about
+ * in-room diarization.
+ *
  * Clusters absent from this table are people we have no independent label for.
  */
 const TRUTH: Record<string, string> = {

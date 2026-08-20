@@ -34,8 +34,12 @@ MODELS = os.environ.get(
 POOL_SECONDS = [float(x) for x in os.environ.get("POOL_SECONDS", "60").split(",")]
 TRIALS = int(os.environ.get("TRIALS", 1))
 
-# Cluster identities established in cross_session_gallery.PEOPLE; the dorm
-# recordings use the owner's reference spans instead, which are stronger.
+# Cluster identities, with their provenance in cross-session-identity.mts. The
+# dorm recordings use the owner's reference spans instead, which are stronger.
+#
+# jerry-45min/SPEAKER_03 as Tarun is OWNER-CONFIRMED. The mentra-mtg entries are
+# not people: Alex, David and Brendan were all remote, so SPEAKER_00 is a laptop
+# speaker carrying three voices. Rows involving it measure a channel.
 CLUSTER_PEOPLE = {
     ("jerry-45min", "SPEAKER_04"): "boris",
     ("jerry-45min", "SPEAKER_03"): "tarun",
