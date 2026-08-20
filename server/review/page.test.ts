@@ -175,3 +175,38 @@ describe('skipping records that he looked and could not answer', () => {
     expect(REVIEW_PAGE_HTML).toContain('Tap to play this line');
   });
 });
+
+describe('skipping is acknowledged without interrupting', () => {
+  it('tells him on the next card that the last one was filed', () => {
+    // Without this, skipping feels like discarding and he under-uses it. A
+    // skipped line is one he has told us is hard, so we would rather he
+    // over-used it.
+    expect(REVIEW_PAGE_HTML).toContain('Saved for a laptop session.');
+  });
+
+  it('says it in a line, not a dialogue: nothing to dismiss and nothing to answer', () => {
+    const at = REVIEW_PAGE_HTML.indexOf('const note = receipt ?');
+    const receipt = REVIEW_PAGE_HTML.slice(at, at + 120);
+    expect(receipt).toContain('cardnote');
+    expect(receipt).not.toContain('<button');
+  });
+
+  it('clears the receipt as soon as it has been shown once', () => {
+    const shown = REVIEW_PAGE_HTML.indexOf("const note = receipt ?");
+    const cleared = REVIEW_PAGE_HTML.indexOf('receipt = null;', shown);
+    expect(cleared).toBeGreaterThan(shown);
+  });
+
+  it('only claims a save once the write has actually succeeded', () => {
+    // A receipt for something that was not saved is worse than no receipt.
+    const handler = REVIEW_PAGE_HTML.slice(REVIEW_PAGE_HTML.indexOf("closest('[data-skip]')"));
+    expect(handler.slice(0, 1200)).toContain('response.ok');
+    expect(handler.slice(0, 1200)).toMatch(/receipt = saved/);
+  });
+
+  it('puts a failed skip back rather than pretending it was filed', () => {
+    const handler = REVIEW_PAGE_HTML.slice(REVIEW_PAGE_HTML.indexOf("closest('[data-skip]')"));
+    expect(handler.slice(0, 1200)).toContain('skipped.delete(line.id)');
+    expect(handler.slice(0, 1200)).toContain('come round again');
+  });
+});
