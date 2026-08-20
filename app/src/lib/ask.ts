@@ -1,7 +1,8 @@
 import { useCallback, useState } from 'react';
 import type { SearchMemoryResult } from '../../../shared/contracts';
 import { api } from './api';
-import { useStore, type AmeliaState } from './store';
+import { useStoreHandle } from '../state/store';
+import type { AmeliaState } from '../state/reducer';
 
 export interface AskResult {
   text: string;
@@ -106,10 +107,12 @@ function searchLocally(state: AmeliaState, query: string): AskResult {
 }
 
 export function useAsk() {
-  const { state } = useStore();
+  const store = useStoreHandle();
   const [pending, setPending] = useState(false);
   const [result, setResult] = useState<AskResult | null>(null);
 
+  // Reads state at call time rather than closing over it, so `ask` is referentially
+  // stable and does not re-create every screen callback that depends on it.
   const ask = useCallback(async (query: string) => {
     const trimmed = query.trim();
     if (!trimmed) return;
@@ -118,11 +121,11 @@ export function useAsk() {
       const response = await api.ask({ query: trimmed });
       setResult({ text: response.text, citations: response.citations, local: false });
     } catch {
-      setResult(searchLocally(state, trimmed));
+      setResult(searchLocally(store.getState(), trimmed));
     } finally {
       setPending(false);
     }
-  }, [state]);
+  }, [store]);
 
   const clear = useCallback(() => setResult(null), []);
 

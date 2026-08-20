@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -11,29 +11,32 @@ import {
 } from '@expo-google-fonts/manrope';
 import { Newsreader_400Regular, Newsreader_500Medium, Newsreader_600SemiBold } from '@expo-google-fonts/newsreader';
 import { useAudioPlayer } from 'expo-audio';
+import { AudioSessionProvider } from './audio/audio-session';
+import { useAudioCapture } from './audio/useAudioCapture';
 import { AmeliaPill } from './src/components/amelia-pill';
 import { EnrollSheet } from './src/components/enroll-sheet';
 import { NamingSheet } from './src/components/naming-sheet';
 import { RecordingBar } from './src/components/recording-bar';
+import { StatusBanner } from './src/components/status-banner';
 import { SummonSheet } from './src/components/summon-sheet';
 import { TabBar, type TabKey } from './src/components/tab-bar';
 import { colors, layout, spacing } from './src/constants/theme';
 import { api } from './src/lib/api';
-import { useAudioUplink } from './src/lib/audio-uplink';
-import { API_BASE_URL } from './src/lib/config';
-import { subscribeToEvents, type StreamSource } from './src/lib/events';
+import { subscribeToEvents } from './src/lib/events';
+import { useBootstrap } from './src/lib/hydrate';
 import { useInsets } from './src/lib/insets';
-import { LIVE_CONVERSATION_ID } from './src/lib/mock-sse';
 import { NavigationProvider, useNavigation } from './src/lib/navigation';
 import { cancelPromiseNotification, schedulePromiseNotification } from './src/lib/notifications';
-import {
-  AmeliaStoreProvider,
-  displayName,
-  isUnnamed,
-  useStore,
-  type PersonRecord,
-} from './src/lib/store';
+import { resolveUrl } from './src/lib/urls';
 import { loadAvatars } from './src/lib/avatars';
+import {
+  useLatestAmeliaTurn,
+  useLiveConversationId,
+  useOpenPromiseCount,
+  usePeople,
+} from './src/state/hooks';
+import { displayName, isUnnamed, type PersonRecord } from './src/state/reducer';
+import { AmeliaStoreProvider, useActions, useStoreHandle } from './src/state/store';
 import { ConversationScreen } from './src/screens/conversation';
 import { HomeScreen } from './src/screens/home';
 import { LoopsScreen } from './src/screens/loops';
@@ -51,14 +54,8 @@ export default function App() {
     Newsreader_600SemiBold,
   });
 
-  // Render on font FAILURE as well as success. useFonts reports errors in its
-  // second slot; ignoring it meant a font that never resolved left the splash
-  // view up forever — an unbranded #FAF9F9 rectangle with no error anywhere,
-  // indistinguishable from a hung app. That is exactly what a dev build over a
-  // Metro tunnel does when an asset request does not come back.
-  //
-  // Falling back to system type is a cosmetic loss. Blocking the entire app
-  // behind a webfont is a demo-ending one.
+  // Render on font FAILURE as well as success. Blocking the whole app behind a webfont
+  // that never resolves is a demo-ending loss; falling back to system type is cosmetic.
   if (!fontsLoaded && !fontError) {
     return <View style={styles.splash}><StatusBar style="dark" /></View>;
   }
@@ -67,182 +64,156 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <AmeliaStoreProvider>
-        <NavigationProvider>
-          <Shell />
-        </NavigationProvider>
+        <AudioSessionProvider>
+          <NavigationProvider>
+            <Shell />
+          </NavigationProvider>
+        </AudioSessionProvider>
       </AmeliaStoreProvider>
     </SafeAreaProvider>
   );
 }
 
 function Shell() {
-  const { state, ingest, namePerson, attributeUtterances, setLiveConversation, hydrateAvatars } = useStore();
-
-  // Profile pictures live on disk under the person's id, so a cold start has to
-  // read them back in — the server's person list carries everything else.
-  useEffect(() => {
-    hydrateAvatars(loadAvatars());
-  }, [hydrateAvatars]);
+  const actions = useActions();
+  const store = useStoreHandle();
   const navigation = useNavigation();
   const insets = useInsets();
-  const [, setStreamSource] = useState<StreamSource>('connecting');
-  const [namingTarget, setNamingTarget] = useState<PersonRecord | null>(null);
-  const [namingUtteranceIds, setNamingUtteranceIds] = useState<string[]>([]);
-  const [namingConversationId, setNamingConversationId] = useState<string | null>(null);
+
+  const recording = useAudioCapture();
+  const liveConversationId = useLiveConversationId();
+  const ameliaTurn = useLatestAmeliaTurn();
+  const openLoopCount = useOpenPromiseCount();
+  const people = usePeople();
+
+  const [naming, setNaming] = useState<{ person: PersonRecord; utteranceIds: string[] } | null>(null);
   const [summonOpen, setSummonOpen] = useState(false);
   const [summonPending, setSummonPending] = useState(false);
   const [enrollOpen, setEnrollOpen] = useState(false);
 
-  // Every recording gets its own conversation. Reusing one fixed id meant a new session
-  // appended to the previous one, so old turns appeared in a brand-new transcript.
-  const [sessionId, setSessionId] = useState(() => `c-${Date.now()}`);
-  const liveConversationId = sessionId;
-  const uplink = useAudioUplink(liveConversationId);
-  const ameliaPlayer = useAudioPlayer(null, { downloadFirst: true });
-  const playedAudio = useRef<string | null>(null);
+  useBootstrap();
+
+  // Profile pictures live on disk under the person's id, so a cold start has to read
+  // them back in — the server's person list carries everything else.
+  useEffect(() => {
+    actions.hydrateAvatars(loadAvatars());
+  }, [actions]);
 
   useEffect(() => {
-    const handle = subscribeToEvents(ingest, setStreamSource);
+    const handle = subscribeToEvents(actions.ingest, actions.setConnection);
     return () => handle.stop();
-    // ingest is stable enough for the stream's lifetime; resubscribing would restart the demo.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [actions]);
 
   // Starting a recording is a request to watch it happen, so jump into the transcript
-  // as soon as the uplink is actually streaming.
-  const wasStreaming = useRef(false);
+  // as soon as there is a session. There is one id now — the machine's — so the pill
+  // and the mic can never point at different conversations.
+  const openedFor = useRef<string | null>(null);
   useEffect(() => {
-    const streaming = uplink.state === 'streaming';
-    if (streaming && !wasStreaming.current) {
-      setLiveConversation(liveConversationId);
-      if (navigation.route.name !== 'conversation') navigation.openConversation(liveConversationId);
+    if (!liveConversationId) {
+      openedFor.current = null;
+      return;
     }
-    if (!streaming && wasStreaming.current) {
-      // Keep polling briefly: the server finalises trailing turns on session.end(), well
-      // after the socket closes. Dropping live immediately truncated every recording.
-      const finished = liveConversationId;
-      setTimeout(() => setLiveConversation(null), 8000);
-      void finished;
-      setSessionId(`c-${Date.now()}`);
-    }
-    // A start that never reached 'streaming' (permission denied, socket refused) must not
-    // reuse its id, or the next attempt merges into the same conversation.
-    if (uplink.state === 'error') setSessionId((id) => (id === liveConversationId ? `c-${Date.now()}` : id));
-    wasStreaming.current = streaming;
-  }, [uplink.state, liveConversationId, navigation, setLiveConversation]);
+    if (openedFor.current === liveConversationId) return;
+    openedFor.current = liveConversationId;
+    navigation.openConversation(liveConversationId);
+  }, [liveConversationId, navigation]);
 
-  // Any open promise carrying a due date schedules itself; closing one takes it back.
-  const scheduledRef = useRef(new Set<string>());
-  useEffect(() => {
-    for (const promise of Object.values(state.promises)) {
-      const person = state.people[promise.person_id];
-      if (promise.status === 'open' && promise.due_at && !scheduledRef.current.has(promise._id)) {
-        scheduledRef.current.add(promise._id);
-        void schedulePromiseNotification(promise, person ? displayName(person) : 'Someone');
-      }
-      if (promise.status !== 'open' && scheduledRef.current.has(promise._id)) {
-        scheduledRef.current.delete(promise._id);
-        void cancelPromiseNotification(promise._id);
-      }
-    }
-  }, [state.promises, state.people]);
-
-  // Amelia audio URLs are server-relative. Play each completed reply once;
-  // text still renders when ElevenLabs is unavailable and audio_url is absent.
-  useEffect(() => {
-    const audioUrl = state.amelia?.audio_url;
-    if (!audioUrl || playedAudio.current === audioUrl) return;
-    playedAudio.current = audioUrl;
-    const source = /^https?:\/\//i.test(audioUrl)
-      ? audioUrl
-      : `${API_BASE_URL}${audioUrl.startsWith('/') ? '' : '/'}${audioUrl}`;
-    ameliaPlayer.replace(source);
-    ameliaPlayer.play();
-  }, [ameliaPlayer, state.amelia?.audio_url]);
-
-  const openLoopCount = useMemo(
-    () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,
-    [state.promises],
-  );
+  usePromiseReminders();
+  useAmeliaVoice();
 
   const quickNames = useMemo(
-    () => Object.values(state.people).filter((person) => !isUnnamed(person) && !person.is_owner).map((person) => person.name),
-    [state.people],
+    () => people.filter((person) => !isUnnamed(person) && !person.is_owner).map((person) => person.name).slice(0, 4),
+    [people],
   );
 
   const tabBarHeight = layout.tabBarHeight + Math.max(insets.bottom, spacing.sm);
   const recordingBarOffset = tabBarHeight + spacing.md;
   const onTranscript = navigation.route.name === 'conversation';
-  // Under the mic on a transcript, above it elsewhere. The mic control is ~94pt tall now
-  // that its caption is gone.
   const ameliaPillOffset = onTranscript ? tabBarHeight - 4 : recordingBarOffset + 110;
   const recordingControlOffset = onTranscript ? recordingBarOffset + 56 : recordingBarOffset;
   const contentInset = recordingBarOffset + 210;
+  /**
+   * The record control belongs where a recording starts, not on top of one you
+   * are reading back. A large button over the text you are trying to follow is
+   * in the way, and starting a *new* recording from inside an old transcript is
+   * not something anybody wants.
+   *
+   * A transcript being recorded right now is the exception: that is where the
+   * stop button has to be.
+   */
+  const readingFinishedTranscript =
+    navigation.route.name === 'conversation' &&
+    navigation.route.conversationId !== liveConversationId;
+  const showFloatingBars = navigation.route.name !== 'person' && !readingFinishedTranscript;
 
-  const showFloatingBars = navigation.route.name !== 'person';
+  const openNaming = useCallback((person: PersonRecord, utteranceIds: string[] = []) => {
+    setNaming({ person, utteranceIds });
+  }, []);
+
+  const openSummon = useCallback(() => setSummonOpen(true), []);
+  const openEnroll = useCallback(() => setEnrollOpen(true), []);
 
   const handleSaveName = (name: string, relationship: string, isOwner?: boolean) => {
-    if (!namingTarget) return;
-    // A speaker Amelia never resolved has no person record yet, so the naming sheet's
-    // synthesised one has to be registered before it can own anything.
-    ingest({
-      type: 'identity',
-      conversation_id: namingConversationId ?? liveConversationId,
-      person_id: namingTarget._id,
-      voiceprint_id: namingTarget.voiceprint_id,
+    if (!naming) return;
+    // One call does all of it: create-or-update the record, attach the turns, and
+    // persist. The old path dispatched a name before the debounced identity event that
+    // was supposed to create the person had even been applied, so relationship and the
+    // owner flag were dropped on exactly the case the sheet exists for.
+    void actions.namePerson({
+      personId: naming.person._id,
       name,
-      utterance_ids: namingUtteranceIds,
+      relationship,
+      isOwner,
+      voiceprintId: naming.person.voiceprint_id,
+      utteranceIds: naming.utteranceIds,
     });
-    namePerson(namingTarget._id, name, relationship, isOwner);
-    if (namingUtteranceIds.length > 0) attributeUtterances(namingUtteranceIds, namingTarget._id);
-    setNamingTarget(null);
-    setNamingUtteranceIds([]);
-    setNamingConversationId(null);
+    setNaming(null);
   };
 
-  const openNaming = (person: PersonRecord, utteranceIds: string[] = []) => {
-    setNamingTarget(person);
-    setNamingUtteranceIds(utteranceIds);
-    // The turns being named decide which conversation this belongs to — not whatever
-    // happens to be recording right now.
-    const source = utteranceIds.map((id) => state.utterances[id]).find(Boolean);
-    setNamingConversationId(source?.conversation_id ?? null);
-  };
-
-  // The server emits the steps and the spoken reply over the bus, so the phone
-  // only has to fire the summon — the live trace and audio arrive like any
-  // other Amelia turn.
   const handleSummon = async (text: string) => {
     setSummonPending(true);
     try {
       await api.summon(text);
       setSummonOpen(false);
     } catch {
-      // A dead server leaves the sheet open so the owner can retry on stage.
+      actions.notify("Amelia couldn't be reached. The request was not sent.");
     } finally {
       setSummonPending(false);
     }
   };
 
+  const openLive = useCallback(() => {
+    // The pill opens the conversation that exists, never a session id nothing has
+    // written to yet — that landed on an empty screen.
+    const target = liveConversationId
+      ?? ameliaTurn?.conversation_id
+      ?? Object.values(store.getState().conversations)
+        .sort((a, b) => b.started_at.localeCompare(a.started_at))[0]?._id;
+    if (target) navigation.openConversation(target);
+    else setSummonOpen(true);
+  }, [liveConversationId, ameliaTurn?.conversation_id, navigation, store]);
+
   return (
     <View style={[styles.root, { paddingTop: insets.top + spacing.sm }]}>
       <StatusBar style="dark" />
+      <StatusBanner />
 
       <View style={styles.body}>
-        {navigation.route.name === 'tabs' ? (
-          <TabScreens
-            tab={navigation.tab}
-            contentInset={contentInset}
-            onNamePerson={openNaming}
-            onEnrollOwner={() => setEnrollOpen(true)}
-          />
-        ) : null}
+        <TabScreens
+          visible={navigation.route.name === 'tabs'}
+          tab={navigation.tab}
+          contentInset={contentInset}
+          onEnrollOwner={openEnroll}
+        />
 
         {navigation.route.name === 'person' ? (
           <PersonScreen
             personId={navigation.route.personId}
             contentInset={contentInset}
-            onRename={(personId) => openNaming(state.people[personId] ?? namingTarget!)}
+            onRename={(personId) => {
+              const person = store.getState().people[personId];
+              if (person) openNaming(person, []);
+            }}
           />
         ) : null}
 
@@ -259,18 +230,13 @@ function Shell() {
         <>
           <AmeliaPill
             // Idle, the pill is an "Ask Amelia" affordance — which Home already provides.
-            // Showing both put two ask fields on one screen.
-            hidden={!state.amelia && navigation.route.name === 'tabs' && navigation.tab === 'home'}
-            turn={state.amelia}
+            hidden={!ameliaTurn && navigation.route.name === 'tabs' && navigation.tab === 'home'}
+            turn={ameliaTurn}
             bottomOffset={ameliaPillOffset}
-            onPress={() => navigation.openConversation(liveConversationId)}
-            onLongPress={() => setSummonOpen(true)}
+            onPress={openLive}
+            onLongPress={openSummon}
           />
-          <RecordingBar
-            uplink={uplink}
-            bottomOffset={recordingControlOffset}
-            onOpenLive={() => navigation.openConversation(liveConversationId)}
-          />
+          <RecordingBar recording={recording} bottomOffset={recordingControlOffset} />
         </>
       ) : null}
 
@@ -284,9 +250,9 @@ function Shell() {
       ) : null}
 
       <NamingSheet
-        person={namingTarget}
-        quickNames={quickNames.slice(0, 4)}
-        onCancel={() => { setNamingTarget(null); setNamingUtteranceIds([]); }}
+        person={naming?.person ?? null}
+        quickNames={quickNames}
+        onCancel={() => setNaming(null)}
         onSave={handleSaveName}
       />
 
@@ -302,24 +268,91 @@ function Shell() {
   );
 }
 
+/**
+ * Any open promise carrying a due date schedules itself locally and registers a server
+ * reminder; closing one takes both back.
+ */
+function usePromiseReminders(): void {
+  const store = useStoreHandle();
+  const actions = useActions();
+
+  useEffect(() => {
+    const scheduled = new Set<string>();
+    const sync = () => {
+      const state = store.getState();
+      for (const promise of Object.values(state.promises)) {
+        const person = state.people[promise.person_id];
+        if (promise.status === 'open' && promise.due_at && !scheduled.has(promise._id)) {
+          scheduled.add(promise._id);
+          void schedulePromiseNotification(promise, person ? displayName(person) : 'Someone');
+          void actions.scheduleReminder(promise);
+        }
+        if (promise.status !== 'open' && scheduled.has(promise._id)) {
+          scheduled.delete(promise._id);
+          void cancelPromiseNotification(promise._id);
+        }
+      }
+    };
+    sync();
+    return store.subscribe(sync);
+  }, [store, actions]);
+}
+
+/**
+ * Amelia's replies are server-relative URLs. Each completed reply plays once; text still
+ * renders when ElevenLabs is unavailable and audio_url is absent.
+ */
+function useAmeliaVoice(): void {
+  const player = useAudioPlayer(null, { downloadFirst: true });
+  const turn = useLatestAmeliaTurn();
+  const played = useRef<string | null>(null);
+  const audioUrl = turn?.audio_url;
+
+  useEffect(() => {
+    if (!audioUrl || played.current === audioUrl) return;
+    played.current = audioUrl;
+    player.replace(resolveUrl(audioUrl));
+    player.play();
+  }, [player, audioUrl]);
+}
+
+/**
+ * All three tabs stay mounted and are hidden rather than unmounted.
+ *
+ * Unmounting reset the search field, the closed-loops toggle and the scroll position on
+ * every tab switch, and re-fired the whole hydrate on every return to Home.
+ */
 function TabScreens({
+  visible,
   tab,
   contentInset,
-  onNamePerson,
   onEnrollOwner,
 }: {
+  visible: boolean;
   tab: TabKey;
   contentInset: number;
-  onNamePerson(person: PersonRecord): void;
   onEnrollOwner(): void;
 }) {
-  if (tab === 'people') return <PeopleScreen contentInset={contentInset} onEnrollOwner={onEnrollOwner} />;
-  if (tab === 'loops') return <LoopsScreen contentInset={contentInset} />;
-  return <HomeScreen contentInset={contentInset} />;
+  if (!visible) return null;
+  return (
+    <>
+      <View style={tab === 'home' ? styles.tabVisible : styles.tabHidden} pointerEvents={tab === 'home' ? 'auto' : 'none'}>
+        <HomeScreen contentInset={contentInset} />
+      </View>
+      <View style={tab === 'people' ? styles.tabVisible : styles.tabHidden} pointerEvents={tab === 'people' ? 'auto' : 'none'}>
+        <PeopleScreen contentInset={contentInset} onEnrollOwner={onEnrollOwner} />
+      </View>
+      <View style={tab === 'loops' ? styles.tabVisible : styles.tabHidden} pointerEvents={tab === 'loops' ? 'auto' : 'none'}>
+        <LoopsScreen contentInset={contentInset} />
+      </View>
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.canvas },
   splash: { flex: 1, backgroundColor: colors.canvas },
   body: { flex: 1 },
+  tabVisible: { flex: 1 },
+  tabHidden: { display: 'none' },
 });

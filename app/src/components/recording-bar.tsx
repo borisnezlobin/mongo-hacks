@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Easing, Pressable, StyleSheet, View } from 'react-native';
 import { MicrophoneIcon } from 'phosphor-react-native';
-import type { AudioUplink } from '../../../shared/contracts';
 import { AppText } from './app-text';
 import { colors, radii, spacing } from '../constants/theme';
+import { formatClock } from '../lib/format';
+import type { RecordingControls } from '../../audio/useAudioCapture';
+import { isRecordingActive, recordingLabel } from '../state/recording';
 
 function useElapsedSeconds(active: boolean): number {
   const [seconds, setSeconds] = useState(0);
@@ -18,14 +20,8 @@ function useElapsedSeconds(active: boolean): number {
   return seconds;
 }
 
-function formatClock(totalSeconds: number): string {
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${String(seconds).padStart(2, '0')}`;
-}
-
 /** Five bars breathing at different rates — enough motion to read as live across a table. */
-function LiveWaveform() {
+const LiveWaveform = memo(function LiveWaveform({ tint }: { tint: string }) {
   const bars = useRef([0, 1, 2, 3, 4].map(() => new Animated.Value(0.35))).current;
 
   useEffect(() => {
@@ -48,21 +44,23 @@ function LiveWaveform() {
       {bars.map((bar, index) => (
         <Animated.View
           key={index}
-          style={[styles.waveformBar, { height: bar.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }) }]}
+          style={[
+            styles.waveformBar,
+            { backgroundColor: tint, height: bar.interpolate({ inputRange: [0, 1], outputRange: [4, 16] }) },
+          ]}
         />
       ))}
     </View>
   );
-}
+});
 
 const BUTTON_SIZE = 76;
 
 /**
  * One circular control that squishes as it swaps glyphs, so record and stop read as the
- * same object changing state rather than two different buttons. The mic and the stop
- * square share a slot and cross-fade, so nothing jumps position.
+ * same object changing state rather than two different buttons.
  */
-function RecordButton({
+const RecordButton = memo(function RecordButton({
   streaming,
   busy,
   failed,
@@ -105,7 +103,6 @@ function RecordButton({
       accessibilityRole="button"
       accessibilityLabel={streaming ? 'Stop listening' : 'Start listening'}
       onPress={onPress}
-      disabled={busy}
       style={({ pressed }) => (pressed ? styles.pressed : undefined)}
     >
       <Animated.View
@@ -136,69 +133,66 @@ function RecordButton({
       </Animated.View>
     </Pressable>
   );
-}
+});
 
 interface RecordingBarProps {
-  uplink: AudioUplink;
+  recording: RecordingControls;
   bottomOffset: number;
-  onOpenLive?(): void;
 }
 
-export function RecordingBar({ uplink, bottomOffset, onOpenLive }: RecordingBarProps) {
-  const streaming = uplink.state === 'streaming';
-  const connecting = uplink.state === 'connecting';
-  const failed = uplink.state === 'error';
-  const elapsed = useElapsedSeconds(streaming);
-  const [failure, setFailure] = useState<string | null>(null);
+/**
+ * Every state the machine can be in has a sentence here, including reconnecting — which
+ * previously had no representation at all because there was no reconnect.
+ *
+ * The button is never disabled while "connecting": a connect that hangs used to leave the
+ * only control on screen dead, with no way to give up.
+ */
+export function RecordingBar({ recording, bottomOffset }: RecordingBarProps) {
+  const { state } = recording;
+  const active = isRecordingActive(state) || state.status === 'stopping';
+  const streaming = state.status === 'streaming';
+  const reconnecting = state.status === 'reconnecting';
+  const failed = state.status === 'error';
+  const elapsed = useElapsedSeconds(streaming || reconnecting);
 
-  const label = streaming
-    ? formatClock(elapsed)
-    : connecting
-      ? 'Connecting'
-      : failed
-        ? "Couldn't start"
-        : 'Start listening';
-
-  // A failed start used to fall through to the idle copy, so the control just flickered
-  // and said "Start listening" again. Showing the reason turns a mystery into an action.
-  const helper = streaming
-    ? 'Amelia is listening — tap to see the transcript'
-    : connecting
-      ? 'Opening the mic'
-      : failed
-        ? (failure ?? 'Tap to try again')
-        : 'Tap to capture this conversation';
+  const caption = failed
+    ? state.error?.message ?? 'Something went wrong. Tap to try again.'
+    : reconnecting
+      ? `Reconnecting — holding ${state.bufferedFrames} ${state.bufferedFrames === 1 ? 'frame' : 'frames'} of audio`
+      : streaming
+        ? formatClock(elapsed)
+        : recordingLabel(state);
 
   const press = () => {
-    if (streaming) {
-      void Promise.resolve(uplink.stop()).catch(() => {});
-      return;
-    }
-    setFailure(null);
-    void Promise.resolve(uplink.start()).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : String(error);
-      setFailure(
-        /permission/i.test(message)
-          ? 'Microphone permission denied. Enable it in Settings › Amelia.'
-          : message,
-      );
-    });
+    // During the stop grace the session is already finished, so a tap is a request to
+    // start a new one — which is also what cancels the grace.
+    if (isRecordingActive(state)) recording.stop();
+    else void recording.start();
   };
 
   return (
     <View style={[styles.wrapper, { bottom: bottomOffset }]} pointerEvents="box-none">
       <View style={styles.column}>
-        {streaming ? <LiveWaveform /> : null}
-        <RecordButton streaming={streaming} busy={connecting} failed={failed} onPress={press} />
-        {/* No caption under the mic: the button's colour and glyph already say whether
-            Amelia is listening, and the label crowded the transcript beneath it. The
-            failure reason is the one thing worth words, so it alone still renders. */}
-        {failed ? (
-          <Pressable onPress={onOpenLive} disabled style={styles.copy}>
-            <AppText variant="caption" align="center" color={colors.live} numberOfLines={2}>
-              {failure ?? "Couldn't start — tap to try again"}
+        {streaming || reconnecting ? (
+          <LiveWaveform tint={reconnecting ? colors.inkFaint : colors.live} />
+        ) : null}
+        <RecordButton
+          streaming={active}
+          busy={state.status === 'requesting-permission'}
+          failed={failed}
+          onPress={press}
+        />
+        {caption ? (
+          <View style={styles.copy}>
+            <AppText
+              variant="caption"
+              align="center"
+              color={failed ? colors.live : streaming ? colors.ink : colors.inkMuted}
+              numberOfLines={2}
+            >
+              {caption}
             </AppText>
-          </Pressable>
+          </View>
         ) : null}
       </View>
     </View>
@@ -225,7 +219,7 @@ const styles = StyleSheet.create({
   glyph: { position: 'absolute', alignItems: 'center', justifyContent: 'center' },
   stopSquare: { width: 24, height: 24, borderRadius: 6, backgroundColor: colors.inkInverse },
   pressed: { opacity: 0.85 },
-  copy: { gap: 1, maxWidth: 300 },
+  copy: { maxWidth: 300 },
   waveform: { flexDirection: 'row', alignItems: 'center', gap: 3, height: 18 },
-  waveformBar: { width: 3, borderRadius: radii.pill, backgroundColor: colors.live },
+  waveformBar: { width: 3, borderRadius: radii.pill },
 });

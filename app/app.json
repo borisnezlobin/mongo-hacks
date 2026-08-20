@@ -12,7 +12,12 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Amelia listens to conversations you choose to remember.",
         "NSLocalNetworkUsageDescription": "Amelia connects to your computer on the local network to sync live conversations and memory.",
-        "NSBonjourServices": ["_expo._tcp"]
+        "NSBonjourServices": [
+          "_expo._tcp"
+        ],
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {

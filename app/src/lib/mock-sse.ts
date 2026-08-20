@@ -93,7 +93,7 @@ export const mockScript: ScriptedEvent[] = [
     atMs: 6000,
     event: {
       type: 'identity', conversation_id: LIVE_CONVERSATION_ID, person_id: UNKNOWN_PERSON_ID,
-      voiceprint_id: UNKNOWN_VOICEPRINT_ID, name: '', utterance_ids: ['lu3'],
+      voiceprint_id: UNKNOWN_VOICEPRINT_ID, name: '', utterance_ids: ['lu3'], confidence: 'pending',
     },
   },
   {
@@ -108,7 +108,7 @@ export const mockScript: ScriptedEvent[] = [
     atMs: 10400,
     event: {
       type: 'identity', conversation_id: LIVE_CONVERSATION_ID, person_id: 'p-priya',
-      name: 'Priya', utterance_ids: ['lu4'],
+      name: 'Priya', utterance_ids: ['lu4'], confidence: 'confirmed',
     },
   },
   {

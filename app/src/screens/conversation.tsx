@@ -1,50 +1,104 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Clipboard, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  CaretLeftIcon,
-  CheckIcon,
-  CopyIcon,
-  PencilSimpleIcon,
-  TrashIcon,
-  UserSwitchIcon,
-} from 'phosphor-react-native';
+  Alert,
+  Clipboard,
+  FlatList,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Platform,
+  Pressable,
+  StyleSheet,
+  TextInput,
+  View,
+} from 'react-native';
+import { CheckIcon, CopyIcon, PencilSimpleIcon, TrashIcon, UserSwitchIcon } from 'phosphor-react-native';
 import type { Id, Utterance } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
 import { AmeliaMessage } from '../components/amelia-message';
+import { BackRow } from '../components/back-row';
 import { Chip } from '../components/ui';
 import { MessageMenu, type Anchor, type MenuAction } from '../components/message-menu';
-import { UtteranceRow } from '../components/utterance-row';
+import { TranscriptBlockRow } from '../components/transcript-block';
 import { colors, layout, radii, spacing } from '../constants/theme';
-import { api } from '../lib/api';
-import { TRANSCRIPT_POLL_MS } from '../lib/config';
 import { formatDay } from '../lib/format';
+import { useTranscriptPolling } from '../lib/hydrate';
 import { useNavigation } from '../lib/navigation';
 import {
-  OWNER_PERSON_ID,
+  useAmeliaTurnsFor,
+  useConversation,
   useConversationUtterances,
-  useStore,
-  type PersonRecord,
-} from '../lib/store';
+  useLiveConversationId,
+} from '../state/hooks';
+import {
+  buildTranscriptBlocks,
+  speakerIdentityFor,
+  unknownVoiceOrdinals,
+  visibleTurns,
+  voiceTurnIds,
+  type TranscriptBlock,
+} from '../lib/transcript';
+import { displayName, isUnnamed, type PersonRecord } from '../state/reducer';
+import { selectPeopleById, selectSessionSpeakers } from '../state/selectors';
+import { useActions, useSelector, useStoreHandle } from '../state/store';
 
 interface ConversationScreenProps {
   conversationId: Id;
-  onNamePerson(person: PersonRecord, utteranceIds?: string[]): void;
+  onNamePerson(person: PersonRecord, utteranceIds: string[]): void;
   contentInset: number;
 }
 
+const keyOfBlock = (block: TranscriptBlock) => block.id;
+
 export function ConversationScreen({ conversationId, onNamePerson, contentInset }: ConversationScreenProps) {
-  const { state, renameConversation, ingest, upsertConversations, deleteConversation } = useStore();
-  const navigation = useNavigation();
+  const conversation = useConversation(conversationId);
   const utterances = useConversationUtterances(conversationId);
-  const conversation = state.conversations[conversationId];
-  // VAD emits stray fragments — a lone "." or a single stray word. They are noise in a
-  // transcript someone is reading, so they are hidden rather than stored differently.
-  const visible = utterances
-    .filter((u) => u.text.replace(/[^a-zA-Z0-9]/g, '').length > 1)
-    // The provider sometimes emits the same sentence twice under different ids; showing it
-    // twice makes the transcript look broken.
-    .filter((u, i, all) => i === 0 || all[i - 1].text.trim() !== u.text.trim());
-  const scrollRef = useRef<ScrollView>(null);
+  const ameliaTurns = useAmeliaTurnsFor(conversationId);
+  const liveConversationId = useLiveConversationId();
+  const navigation = useNavigation();
+  const actions = useActions();
+  const store = useStoreHandle();
+  const listRef = useRef<FlatList<TranscriptBlock>>(null);
+  /**
+   * Whether new turns should pull the view down.
+   *
+   * The old rule was "scroll on every growth while live", which on a 48-minute recording
+   * means you cannot read back over anything: scrolling up to re-read is undone by the
+   * next turn a second later. Sticking only while you are already at the bottom is the
+   * behaviour every chat app has, and it is what makes a long live transcript usable.
+   */
+  const stickToBottom = useRef(true);
+
+  const sessionSpeakerOf = useSelector(selectSessionSpeakers);
+  const visible = useMemo(() => visibleTurns(utterances), [utterances]);
+
+  // Rebuilt against the previous list so unchanged blocks keep their identity: a live
+  // transcript only appends, and without this every block would be a new object per tick.
+  const blocksRef = useRef<TranscriptBlock[]>([]);
+  const blocks = useMemo(() => {
+    const next = buildTranscriptBlocks(visible, sessionSpeakerOf, blocksRef.current);
+    blocksRef.current = next;
+    return next;
+  }, [visible, sessionSpeakerOf]);
+
+  // Numbering the unnamed voices is what makes seven anonymous speakers tellable apart.
+  const people = useSelector(selectPeopleById);
+  const unknownIndexes = useMemo(
+    () => unknownVoiceOrdinals(blocks, (voiceKey) => !isUnnamed(people[voiceKey])),
+    [blocks, people],
+  );
+
+  // One voice is asked about once, on the first block it speaks. Anchoring the card to
+  // every run would put dozens of identical cards down a long transcript.
+  const suggestionAnchors = useMemo(() => {
+    const seen = new Set<Id>();
+    const anchors = new Set<Id>();
+    for (const block of blocks) {
+      if (seen.has(block.voiceKey)) continue;
+      seen.add(block.voiceKey);
+      anchors.add(block.id);
+    }
+    return anchors;
+  }, [blocks]);
 
   const [menu, setMenu] = useState<
     { anchor: Anchor; speaker: string; text: string; actions: MenuAction[] } | null
@@ -56,82 +110,78 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
     setDraftTitle(conversation?.title ?? '');
   }, [conversation?.title]);
 
-  const isLive = state.liveConversationId === conversationId;
-  const ameliaTurn = state.amelia && (!state.amelia.conversation_id || state.amelia.conversation_id === conversationId)
-    ? state.amelia
-    : null;
+  const isLive = liveConversationId === conversationId;
 
-  // New turns should pull the view down only while the conversation is actually live.
-  const lastCount = useRef(0);
-  useEffect(() => {
-    const grew = visible.length > lastCount.current;
-    lastCount.current = visible.length;
-    // Polling re-renders constantly; scrolling on every render yanked the view even when
-    // nothing new had arrived. Only a genuinely longer transcript pulls you down.
-    if (!isLive || !grew) return;
-    const timer = setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 60);
-    return () => clearTimeout(timer);
-  }, [visible.length, isLive]);
+  const reportOffline = useCallback(
+    () => actions.notify("Couldn't reach the server, so this transcript may be behind."),
+    [actions],
+  );
+  useTranscriptPolling(conversationId, reportOffline, isLive);
+
+  const onScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    stickToBottom.current = distanceFromBottom < 120;
+  }, []);
 
   /**
-   * Hydrate on open, then keep polling while the conversation is live.
-   *
-   * SSE alone is not dependable in front of an audience: many reverse proxies (Cloudflare
-   * tunnels among them) buffer event streams and release nothing until the stream closes,
-   * which shows up as a recording that produces no transcript at all. Polling the same
-   * REST endpoint is plain request/response, so it survives any proxy. Utterances are keyed
-   * by id, so whichever path delivers a turn first wins and the other is a no-op.
+   * Growth is followed from the content size rather than the item count, because a
+   * virtualized list only knows its real height once the new rows have laid out —
+   * scrolling before that lands short of the bottom.
    */
-  useEffect(() => {
-    let cancelled = false;
+  const firstLayout = useRef(true);
+  const onContentSizeChange = useCallback(() => {
+    if (firstLayout.current) {
+      firstLayout.current = false;
+      // A live transcript opens where the talking is; a finished one opens at the start,
+      // because that is where you read from.
+      if (!isLive) return;
+      listRef.current?.scrollToEnd({ animated: false });
+      return;
+    }
+    if (!isLive || !stickToBottom.current) return;
+    listRef.current?.scrollToEnd({ animated: true });
+  }, [isLive]);
 
-    const pull = async () => {
-      const summary = await api.getConversation(conversationId).catch(() => null);
-      if (!summary || cancelled) return;
-      // Take the server's record too: without it the screen fabricates started_at from
-      // ingest time, which then wins forever and sorts the list wrongly.
-      if (summary.conversation) upsertConversations([summary.conversation]);
-      for (const utterance of summary.utterances) {
-        ingest({
-          type: 'utterance',
-          utterance_id: utterance._id,
-          conversation_id: utterance.conversation_id,
-          person_id: utterance.person_id,
-          voiceprint_id: utterance.voiceprint_id,
-          text: utterance.text,
-          start_ms: utterance.start_ms,
-          end_ms: utterance.end_ms,
-          is_final: utterance.is_final,
-        });
-      }
-    };
+  const openPerson = useCallback((personId: Id) => navigation.openPerson(personId), [navigation]);
 
-    void pull();
-    // Poll whenever the screen is open, not only while this phone is recording. A replay
-    // driven from the server is someone else writing turns into this conversation, and
-    // without polling it those turns never arrive.
-    const interval = setInterval(() => void pull(), TRANSCRIPT_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [conversationId, ingest, isLive, upsertConversations]);
-
-  const commitTitle = () => {
-    renameConversation(conversationId, draftTitle);
-    setEditingTitle(false);
-  };
+  /** Naming a voice names every turn in the block, which is the run it spoke. */
+  const nameSpeaker = useCallback((block: TranscriptBlock) => {
+    const state = store.getState();
+    const first = block.utterances[0];
+    const person = block.personId ? state.people[block.personId] : undefined;
+    const ownerId = state.conversations[first.conversation_id]?.owner_id ?? 'owner';
+    onNamePerson(
+      person ?? speakerIdentityFor(first, ownerId, state.sessionSpeakerOf[first._id]),
+      voiceTurnIds(blocksRef.current, block.voiceKey),
+    );
+  }, [onNamePerson, store]);
 
   /**
-   * Long-press a turn. The menu opens against the message itself rather than
-   * as a detached sheet, so there is no doubt which turn is about to change.
+   * Confirming an overheard name is the same write as typing one into the naming sheet.
+   * That matters beyond tidiness: the naming path is what persists the person and
+   * enrolls the voiceprint, so it is the whole reason the voice is recognised in the
+   * next conversation. A shortcut that only set local state would lose the feature.
+   */
+  const confirmSuggestedName = useCallback((block: TranscriptBlock, name: string) => {
+    void actions.namePerson({
+      personId: block.voiceKey,
+      name,
+      voiceprintId: block.utterances[0].voiceprint_id,
+      utteranceIds: voiceTurnIds(blocksRef.current, block.voiceKey),
+    });
+  }, [actions]);
+
+  /**
+   * Long-press a turn. The menu opens against the message itself, so there is no doubt
+   * which turn is about to change.
    *
    * Clipboard comes from react-native core, which warns that it is deprecated.
-   * expo-clipboard is the successor but is a native module, and adding one
-   * means rebuilding the dev client. Swap it at the next native rebuild.
+   * expo-clipboard is a native module, and adding one means rebuilding the dev client.
    */
-  const openMenu = (utterance: Utterance, person: PersonRecord | undefined, anchor: Anchor) => {
-    const speaker = person ? person.name : 'Unknown speaker';
+  const openMenu = useCallback((utterance: Utterance, anchor: Anchor) => {
+    const person = utterance.person_id ? store.getState().people[utterance.person_id] : undefined;
+    const speaker = displayName(person);
     setMenu({
       anchor,
       speaker,
@@ -146,45 +196,56 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
         {
           label: person ? 'Change speaker' : 'Name this speaker',
           icon: UserSwitchIcon,
-          run: () => onNamePerson(
-            person ?? {
-              _id: utterance._id,
-              owner_id: conversation?.owner_id ?? OWNER_PERSON_ID,
-              name: '',
-              created_at: utterance.created_at,
-              updated_at: utterance.updated_at,
-            },
-            [utterance._id],
-          ),
+          run: () => {
+            const block = blocksRef.current.find(
+              (candidate) => candidate.utterances.some((turn) => turn._id === utterance._id),
+            );
+            if (block) nameSpeaker(block);
+          },
         },
       ],
     });
+  }, [nameSpeaker, store]);
+
+  const renderBlock = useCallback(({ item }: { item: TranscriptBlock }) => (
+    <TranscriptBlockRow
+      block={item}
+      unknownIndex={unknownIndexes.get(item.voiceKey)}
+      offerSuggestion={suggestionAnchors.has(item.id)}
+      onPressPerson={openPerson}
+      onName={nameSpeaker}
+      onConfirmName={confirmSuggestedName}
+      onLongPress={openMenu}
+    />
+  ), [unknownIndexes, suggestionAnchors, openPerson, nameSpeaker, confirmSuggestedName, openMenu]);
+
+  const commitTitle = () => {
+    actions.renameConversation(conversationId, draftTitle);
+    setEditingTitle(false);
   };
 
   const confirmDelete = () => {
     Alert.alert(
       'Delete this conversation?',
-      // Say what actually goes. Facts and promises cite a turn in this
-      // transcript, so keeping them would leave memory asserting things it
-      // cannot show you the evidence for.
+      // Say what actually goes. Facts and promises cite a turn in this transcript, so
+      // keeping them would leave memory asserting things it cannot show evidence for.
       'The transcript and anything Amelia remembered from it are removed. This cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: async () => {
+          onPress: () => {
             navigation.back();
-            deleteConversation(conversationId);
-            await api.deleteConversation(conversationId).catch(() => {});
+            void actions.deleteConversation(conversationId);
           },
         },
       ],
     );
   };
 
-  // A live conversation has no record until the first utterance arrives, so an empty id is
-  // "waiting for the first voice", not "missing".
+  // A live conversation has no record until the first utterance arrives, so an empty id
+  // is "waiting for the first voice", not "missing".
   if (!conversation) {
     return (
       <View style={styles.container}>
@@ -238,64 +299,36 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
         </View>
       </View>
 
-      <ScrollView
-        ref={scrollRef}
+      <FlatList
+        ref={listRef}
+        data={blocks}
+        keyExtractor={keyOfBlock}
+        renderItem={renderBlock}
         contentContainerStyle={[styles.scroll, { paddingBottom: contentInset }]}
         showsVerticalScrollIndicator={false}
-      >
-        {visible.map((utterance, index) => {
-          const person = utterance.person_id ? state.people[utterance.person_id] : undefined;
-          const previous = visible[index - 1];
-          // Unattributed turns never share a header. Grouping them implied consecutive
-          // unknown turns came from one person, so someone else's line appeared under the
-          // previous speaker's name — the transcript asserting something it does not know.
-          const showHeader =
-            !previous || !utterance.person_id || previous.person_id !== utterance.person_id;
-          // One naming affordance per run of turns, on the first of the run. Keying it on
-          // the utterance id gave every message its own button, because unresolved speakers
-          // share neither a person id nor a voiceprint id to group on.
-          const runIds: string[] = [];
-          if (showHeader) {
-            for (let i = index; i < visible.length; i += 1) {
-              if (visible[i].person_id !== utterance.person_id) break;
-              runIds.push(visible[i]._id);
-            }
-          }
-          return (
-            <UtteranceRow
-              key={utterance._id}
-              utterance={utterance}
-              person={person}
-              showHeader={showHeader}
-              attributing={state.attributing[utterance._id] === true}
-              onLongPress={(anchor) => openMenu(utterance, person, anchor)}
-              onPressPerson={() => person && navigation.openPerson(person._id)}
-              // Unattributed turns still need a way in, so synthesise a person record from
-              // the voiceprint. Without this the speaker Amelia has not resolved yet — often
-              // the owner's own voice — was the one row you could not name.
-              onName={!showHeader ? undefined : () => onNamePerson(
-                person ?? {
-                  _id: utterance.person_id ?? utterance.voiceprint_id ?? `speaker-${utterance._id}`,
-                  owner_id: conversation.owner_id,
-                  name: '',
-                  voiceprint_id: utterance.voiceprint_id,
-                  created_at: utterance.created_at,
-                  updated_at: utterance.updated_at,
-                },
-                runIds,
-              )}
-            />
-          );
-        })}
-
-        {ameliaTurn ? <AmeliaMessage turn={ameliaTurn} /> : null}
-
-        {visible.length === 0 ? (
-          <AppText variant="body" color={colors.inkMuted} style={styles.waiting}>
-            Waiting for the first voice.
-          </AppText>
-        ) : null}
-      </ScrollView>
+        onScroll={onScroll}
+        scrollEventThrottle={100}
+        onContentSizeChange={onContentSizeChange}
+        // Blocks are variable height, so there is no getItemLayout to give. These keep
+        // the mounted window small without the blank-space flicker a tighter one causes.
+        initialNumToRender={12}
+        maxToRenderPerBatch={10}
+        updateCellsBatchingPeriod={50}
+        windowSize={11}
+        // Android only: on iOS this is known to blank out text in a recycled cell, and a
+        // transcript that loses its words is worse than one that costs more memory.
+        removeClippedSubviews={Platform.OS === 'android'}
+        ListFooterComponent={
+          <>
+            {ameliaTurns.map((turn) => <AmeliaMessage key={turn.request_id} turn={turn} />)}
+            {blocks.length === 0 ? (
+              <AppText variant="body" color={colors.inkMuted} style={styles.waiting}>
+                Waiting for the first voice.
+              </AppText>
+            ) : null}
+          </>
+        }
+      />
 
       <MessageMenu
         anchor={menu?.anchor ?? null}
@@ -308,24 +341,8 @@ export function ConversationScreen({ conversationId, onNamePerson, contentInset 
   );
 }
 
-function BackRow({ onPress }: { onPress(): void }) {
-  return (
-    <Pressable onPress={onPress} style={styles.backRow} accessibilityLabel="Back" hitSlop={8}>
-      <CaretLeftIcon size={20} color={colors.ink} />
-      <AppText variant="bodyStrong">Back</AppText>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: layout.screenPadding,
-    paddingBottom: spacing.sm,
-  },
   titleBlock: { paddingHorizontal: layout.screenPadding, gap: spacing.xs, paddingBottom: spacing.md },
   titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   titleEditRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
@@ -346,6 +363,5 @@ const styles = StyleSheet.create({
   scroll: { paddingHorizontal: layout.screenPadding, paddingTop: spacing.xs },
   waiting: { paddingTop: spacing.xl },
   waitingBlock: { paddingHorizontal: layout.screenPadding, gap: spacing.xs, paddingTop: spacing.xl },
-  missing: { paddingHorizontal: layout.screenPadding },
   flexible: { flex: 1, flexShrink: 1 },
 });

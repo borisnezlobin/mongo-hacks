@@ -7,11 +7,12 @@ import type {
   Id,
   NamePersonRequest,
   Person,
+  PromiseMemory,
   Reminder,
   SearchMemoryResult,
 } from '../../../shared/contracts';
-import { API_BASE_URL } from './config';
-import type { ContextChange } from './context-changes';
+import { REQUEST_TIMEOUT_MS } from './config';
+import { apiUrl } from './urls';
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) {
@@ -20,11 +21,29 @@ export class ApiError extends Error {
   }
 }
 
+/** A request that never returns is indistinguishable from an empty account. */
+export class NetworkError extends Error {
+  constructor(readonly cause: unknown) {
+    super('Amelia could not reach the server.');
+    this.name = 'NetworkError';
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(apiUrl(path), {
+      ...init,
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+    });
+  } catch (error) {
+    throw new NetworkError(error);
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!response.ok) {
     throw new ApiError(`${init?.method ?? 'GET'} ${path} failed`, response.status);
   }
@@ -46,12 +65,15 @@ export const api = {
     request<{ utterances: number; facts: number; promises: number }>(`/conversations/${id}`, {
       method: 'DELETE',
     }),
+  listPromises: (status?: PromiseMemory['status']) =>
+    request<PromiseMemory[]>(status ? `/promises?status=${status}` : '/promises'),
+  setPromiseStatus: (id: Id, status: PromiseMemory['status']) =>
+    post<PromiseMemory>(`/promises/${id}/status`, { status }),
   searchMemory: (query: string, personId?: Id) => {
     const params = new URLSearchParams({ q: query });
     if (personId) params.set('person_id', personId);
     return request<SearchMemoryResult[]>(`/memory/search?${params.toString()}`);
   },
-  listContextChanges: (limit = 10) => request<ContextChange[]>(`/memory/changes?limit=${limit}`),
   ask: (body: AskRequest) => post<AskResponse>('/ask', body),
   summon: (text: string) =>
     post<{ text: string; steps: unknown[] }>('/amelia/summon', { text }),

@@ -1,10 +1,10 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { Animated, Easing, Pressable, StyleSheet } from 'react-native';
 import { ChatCircleIcon, SpeakerHighIcon } from 'phosphor-react-native';
 import { AppText } from './app-text';
 import { GlassSurface } from './ui';
 import { colors, spacing } from '../constants/theme';
-import type { AmeliaTurn } from '../lib/store';
+import type { AmeliaTurn } from '../state/reducer';
 
 interface AmeliaPillProps {
   hidden?: boolean;
@@ -20,7 +20,7 @@ interface AmeliaPillProps {
  * first turn. With an active turn it shows the latest step and a tap opens the
  * transcript; idle it reads as a quiet "Ask Amelia" affordance.
  */
-export function AmeliaPill({ hidden, turn, bottomOffset, onPress, onLongPress }: AmeliaPillProps) {
+export const AmeliaPill = memo(function AmeliaPill({ hidden, turn, bottomOffset, onPress, onLongPress }: AmeliaPillProps) {
   const entrance = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -72,7 +72,7 @@ export function AmeliaPill({ hidden, turn, bottomOffset, onPress, onLongPress }:
       </GlassSurface>
     </Animated.View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   wrapper: { position: 'absolute', left: spacing.xl, right: spacing.xl },

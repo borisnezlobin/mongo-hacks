@@ -39,6 +39,8 @@ interface MessageMenuProps {
 const ROW_HEIGHT = 48;
 const GAP = spacing.sm;
 const MARGIN = spacing.lg;
+/** Clears the home indicator, which Dimensions.get('window') counts as usable. */
+const BOTTOM_MARGIN = spacing.xxxl;
 const MAX_PREVIEW = 220;
 
 /**
@@ -76,16 +78,12 @@ export function MessageMenu({ anchor, speaker, text, actions, onDismiss }: Messa
   const menuHeight = actions.length * ROW_HEIGHT + spacing.sm * 2;
   const previewHeight = Math.min(anchor.height, MAX_PREVIEW);
 
-  // Open downward when there is room, upward when there is not, and clamp the
-  // whole group into the screen when neither fits — a menu that runs off the
-  // bottom is the one failure people actually hit, on the newest message.
-  const below = anchor.y + previewHeight + GAP + menuHeight + MARGIN <= screen.height;
-  let previewTop = anchor.y;
-  if (!below) {
-    previewTop = Math.max(MARGIN, anchor.y - (menuHeight + GAP) + (anchor.height - previewHeight));
-  }
-  previewTop = Math.min(previewTop, screen.height - previewHeight - menuHeight - GAP - MARGIN);
-  previewTop = Math.max(previewTop, MARGIN);
+  // The actions always sit below the message — flipping them above it changes
+  // which row each action lines up with and reads as a different menu. So when
+  // the pair would run off the bottom, the *message* slides up instead, by
+  // exactly as much as it takes and no more, keeping it near where it was.
+  const lowestTop = screen.height - BOTTOM_MARGIN - menuHeight - GAP - previewHeight;
+  const previewTop = Math.max(MARGIN, Math.min(anchor.y, lowestTop));
 
   const left = Math.max(MARGIN, Math.min(anchor.x, screen.width - anchor.width - MARGIN));
   const width = Math.min(anchor.width, screen.width - MARGIN * 2);
@@ -106,6 +104,9 @@ export function MessageMenu({ anchor, speaker, text, actions, onDismiss }: Messa
             width,
             opacity: entrance,
             transform: [
+              // Start where the row actually is and rise into place, so a message
+              // that has to move up is seen moving rather than teleporting.
+              { translateY: entrance.interpolate({ inputRange: [0, 1], outputRange: [anchor.y - previewTop, 0] }) },
               { scale: entrance.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
             ],
           },

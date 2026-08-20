@@ -1,10 +1,5 @@
 import { AUDIO_FRAME_SAMPLES } from '../../shared/contracts'
 
-export function buildStreamUrl(base = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3000'): string {
-  const wsBase = base.replace(/^http/, 'ws').replace(/\/$/, '')
-  return `${wsBase}/stream`
-}
-
 /** Copies a frame into an exactly-sized standalone buffer for WebSocket.send. */
 export function frameToArrayBuffer(frame: Float32Array): ArrayBuffer {
   return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer
