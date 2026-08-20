@@ -22,7 +22,6 @@ export interface EmailDraft {
 }
 
 const drafts = new Map<string, EmailDraft>();
-let seq = 0;
 
 export async function draftEmail(
   memory: MemoryApi,
@@ -37,7 +36,12 @@ export async function draftEmail(
   const emailFact = await memory.resolveFactState(personId, 'email').catch(() => null);
 
   const draft: EmailDraft = {
-    draft_id: `draft_${++seq}`,
+    // A UUID rather than a counter. Drafts live in memory, so a restart used to
+    // reset the counter to zero and hand the next draft the id `draft_1` — the
+    // same id a send link the owner was still holding pointed at. Tapping send
+    // on a stale link would then send a completely different email, to a
+    // different person, with no error. Ids must not be reusable.
+    draft_id: `draft_${crypto.randomUUID()}`,
     to_person_id: personId,
     to_name: person?.name ?? null,
     to_email: emailFact?.claim ?? null,

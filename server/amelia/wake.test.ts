@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { OWNER_ID, type UtteranceEvent } from '../../shared/contracts';
+import { OWNER_AUTH_THRESHOLD, OWNER_ID, type UtteranceEvent } from '../../shared/contracts';
 import { OWNER_PERSON_ID, detectWake } from './wake';
 
 const utterance = (text: string, overrides: Partial<UtteranceEvent> = {}): UtteranceEvent => ({
@@ -48,7 +48,14 @@ describe('detectWake', () => {
   });
 
   it('rejects a speaker below the owner auth threshold', () => {
-    expect(detectWake(utterance('Hey Amelia, do a thing'), 0.4)).toBeNull();
+    // Derived from the constant rather than hardcoded: this used to assert on a
+    // literal 0.4, so recalibrating the threshold against real audio silently
+    // turned a rejection test into one that passed a speaker through.
+    expect(detectWake(utterance('Hey Amelia, do a thing'), OWNER_AUTH_THRESHOLD - 0.01)).toBeNull();
+  });
+
+  it('admits a speaker at the owner auth threshold', () => {
+    expect(detectWake(utterance('Hey Amelia, do a thing'), OWNER_AUTH_THRESHOLD)).not.toBeNull();
   });
 
   it('fails closed when Lane A supplies no confidence', () => {

@@ -1,11 +1,20 @@
 /**
  * Amelia's tool surface.
  *
+ * Deliberately general. There is no tool for summarising a conversation, no
+ * tool for listing what somebody said, no tool per question shape — those are
+ * all the same operation with different arguments: name a scope, choose a
+ * granularity, spend a budget. A tool per phrasing answers exactly the phrasing
+ * it was written for and nothing near it.
+ *
  * Five tools bind to Lane B's frozen MemoryApi; `draft_email` is Lane D's own.
- * Lane D never writes Lane B's collections directly.
+ * The retrieval tools read through Lane B's `server/ask` surface. Lane D never
+ * writes Lane B's collections directly.
  */
 
 import { TONIGHT_DEFAULT_HOUR, type MemoryApi } from '../../shared/contracts';
+import { assembleContext, type ContextOptions, type ContextScope } from '../ask/context';
+import { listPeople, recentConversations } from '../ask/corpus';
 import type { ToolSpec } from './provider';
 import { draftEmail } from './email';
 
@@ -29,6 +38,58 @@ export const TOOLS: ToolSpec[] = [
       },
       required: ['query'],
     },
+  },
+  {
+    name: 'gather_context',
+    description:
+      'Read a representative sample of what was actually said, with every line labelled ' +
+      'by speaker and carrying the id of the real turn. Use this whenever the question is ' +
+      'about a stretch of conversation rather than one detail — what was discussed, who ' +
+      'was there, what somebody spent the evening talking about — and use it when ' +
+      'search_memory comes back thin.\n' +
+      'Scope it: conversation_id for one conversation, person_id for one person (their ' +
+      'own words only), since/until for a date range, or nothing at all for the most ' +
+      'recent conversation. about steers which parts come back; leave it empty for an ' +
+      'even sample.\n' +
+      'granularity: "overview" samples the whole scope thinly and adds a topic strip ' +
+      'covering it end to end — the right choice for a broad question about a long ' +
+      'conversation. "detail" quotes fewer places at more length. "verbatim" returns ' +
+      'long unbroken excerpts and should be scoped narrowly.\n' +
+      'The excerpts are a sample, not the transcript. Say what the material supports and ' +
+      'nothing beyond it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        conversation_id: { type: 'string' },
+        person_id: { type: 'string', description: 'Restrict to what this person said themselves.' },
+        since: { type: 'string', description: 'ISO 8601 date or timestamp.' },
+        until: { type: 'string', description: 'ISO 8601 date or timestamp.' },
+        about: { type: 'string', description: 'Optional focus, in plain language.' },
+        granularity: { type: 'string', enum: ['overview', 'detail', 'verbatim'] },
+        budget_words: { type: 'number', description: 'Roughly how many words of transcript to spend.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'list_conversations',
+    description:
+      'List recent conversations — when each happened, how many turns, and who spoke. ' +
+      'Call this to find the conversation a question refers to before scoping ' +
+      'gather_context to it, or to answer questions about when something happened.',
+    parameters: {
+      type: 'object',
+      properties: { limit: { type: 'number', description: 'Default 10.' } },
+      required: [],
+    },
+  },
+  {
+    name: 'list_people',
+    description:
+      'List everyone in the memory, named and unnamed. Call this to turn a name in the ' +
+      'request into a person_id. Voices that have not been named yet appear as unnamed — ' +
+      'never guess which person an unnamed voice is.',
+    parameters: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'get_person',
@@ -117,13 +178,101 @@ export interface ToolOutcome {
   isError?: boolean;
 }
 
+/**
+ * The read side of memory, injected so the tool layer can be exercised without
+ * storage. `MemoryApi` is frozen and has no room for scope or granularity, so
+ * these come from Lane B's retrieval surface rather than through it.
+ */
+export interface RetrievalTools {
+  assembleContext(scope: ContextScope, options: ContextOptions): ReturnType<typeof assembleContext>;
+  recentConversations(limit: number): ReturnType<typeof recentConversations>;
+  listPeople(): ReturnType<typeof listPeople>;
+}
+
+const LIVE_RETRIEVAL: RetrievalTools = { assembleContext, recentConversations, listPeople };
+
+function describePerson(person: { name?: string; is_unnamed?: boolean; is_owner?: boolean }): string {
+  if (person.is_owner) return 'you';
+  if (person.is_unnamed || !person.name?.trim()) return 'an unnamed voice';
+  return person.name;
+}
+
 export async function runTool(
   memory: MemoryApi,
   name: string,
   input: Record<string, any>,
+  retrieval: RetrievalTools = LIVE_RETRIEVAL,
 ): Promise<ToolOutcome> {
   try {
     switch (name) {
+      case 'gather_context': {
+        const context = await retrieval.assembleContext(
+          {
+            conversation_id: input.conversation_id,
+            person_id: input.person_id,
+            since: input.since,
+            until: input.until,
+            about: input.about,
+          },
+          { granularity: input.granularity, budget_words: input.budget_words },
+        );
+
+        const result = {
+          conversations: context.conversations,
+          coverage: context.coverage,
+          topics_over_time: context.timeline,
+          excerpts: context.blocks.map((block) => ({
+            at: block.at,
+            conversation_id: block.conversation_id,
+            topics: block.topics,
+            lines: block.quotes.map((quote) => `(id ${quote.utterance_id}) ${quote.speaker}: ${quote.text}`),
+          })),
+          note: context.note,
+        };
+
+        const { passages, passages_quoted } = context.coverage;
+        return {
+          result,
+          message: passages
+            ? `Read ${passages_quoted} of ${passages} passages across ${context.conversations.length} conversation${context.conversations.length === 1 ? '' : 's'}`
+            : 'Nothing recorded in that scope',
+        };
+      }
+
+      case 'list_conversations': {
+        const limit = Number.isFinite(input.limit) ? Math.max(1, Math.min(50, input.limit)) : 10;
+        const [conversations, people] = await Promise.all([
+          retrieval.recentConversations(limit),
+          retrieval.listPeople(),
+        ]);
+        const byId = new Map(people.map((person) => [person._id, person]));
+        const result = conversations.map((conversation) => ({
+          id: conversation._id,
+          title: conversation.title,
+          started_at: conversation.started_at,
+          ended_at: conversation.ended_at,
+          participants: conversation.participant_ids.map((personId) => {
+            const person = byId.get(personId);
+            return { person_id: personId, name: person ? describePerson(person) : 'an unnamed voice' };
+          }),
+        }));
+        return {
+          result,
+          message: result.length ? `${result.length} recent conversations` : 'No conversations recorded',
+        };
+      }
+
+      case 'list_people': {
+        const people = await retrieval.listPeople();
+        const result = people.map((person) => ({
+          person_id: person._id,
+          name: describePerson(person),
+          named: !person.is_unnamed && Boolean(person.name?.trim()),
+          relationship: person.relationship,
+        }));
+        return { result, message: result.length ? `${result.length} people` : 'Nobody recorded yet' };
+      }
+
       case 'search_memory': {
         const hits = await memory.searchMemory(input.query, input.person_id);
         return {
