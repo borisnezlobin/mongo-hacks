@@ -8,7 +8,7 @@ import type {
   ServerDependencies,
 } from '../../shared/contracts';
 import type { AmeliaBus } from '../lib/bus';
-import { answerQuestion } from '../ask';
+import { answerQuestion, askRequestProblem } from '../ask';
 import { searchMemory } from '../ask/retrieval';
 import { listContextChanges } from './changes';
 import { flushSlowPass, registerExtraction } from './extraction';
@@ -66,6 +66,7 @@ export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void 
       person_id: person._id,
       name: person.name,
       utterance_ids: [],
+      confidence: 'confirmed',
     });
     return context.json(person);
   });
@@ -122,8 +123,10 @@ export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void 
   });
 
   app.post('/ask', async (context) => {
-    const body = await context.req.json<AskRequest>();
-    return context.json(await answerQuestion(body));
+    const body = await context.req.json<unknown>().catch(() => undefined);
+    const problem = askRequestProblem(body);
+    if (problem) return context.json({ error: problem }, 400);
+    return context.json(await answerQuestion(body as AskRequest));
   });
 
   app.post('/reminders', async (context) => {
