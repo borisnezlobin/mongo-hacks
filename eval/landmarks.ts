@@ -190,7 +190,12 @@ export const LANDMARKS: Landmark[] = [
   {
     recording: 'dorm-40min',
     at_ms: 2_466_830,
-    end_ms: 2_467_710,
+    // Whisper ends this at 2,467.27 s; the window used to run to 2,467.71,
+    // which is where the NEXT segment starts. That overshoot reached into the
+    // following speaker's span, and the landmark then resolved to him — making
+    // a correct reference look like it contradicted the owner. A landmark's
+    // window must be the line itself, never the gap after it.
+    end_ms: 2_467_270,
     quote: 'Goodnight.',
     person: 'clara',
     why: 'answers "good night, Clara"',
