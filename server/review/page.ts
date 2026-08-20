@@ -815,6 +815,19 @@ $('setNew').onclick = () => {
  */
 let skipped = new Set();
 let lastCard = null;
+/**
+ * A one-line receipt for the card he just filed.
+ *
+ * Not a dialogue and not something to dismiss: it appears on the next card and
+ * goes away when he acts. Without it, skipping feels like discarding, and he
+ * would use it less than he should — but a skipped line is one he has told us
+ * is hard, which makes it worth more than a line nobody has looked at. The
+ * whole point is that he over-uses this rather than avoiding it.
+ *
+ * Only set after the write actually succeeds, because a receipt for something
+ * that was not saved is worse than no receipt.
+ */
+let receipt = null;
 
 function nextCard() {
   const question = questions.find((candidate) => !candidate.answer && !skipped.has(candidate.id));
@@ -839,9 +852,11 @@ function cardStale() {
 function showCard() {
   const card = nextCard();
   const undo = lastCard ? '<button class="quiet" data-undo="1">Change my last answer</button>' : '';
+  const note = receipt ? '<p class="cardnote">' + esc(receipt) + '</p>' : '';
+  receipt = null;
 
   if (card.kind === 'done') {
-    $('card').innerHTML =
+    $('card').innerHTML = note +
       '<h2 class="cardq">That is everything waiting for you.</h2>' +
       '<p class="cardnote">Everything you answered is saved. You can stop any time — nothing is lost by closing this.</p>' +
       '<div class="out">' + undo + '<button class="big" data-again="1">Check again</button></div>';
@@ -852,7 +867,7 @@ function showCard() {
   if (card.kind === 'question') {
     // No cluster ids. "0:E vs 950:E" is our bookkeeping and means nothing to
     // him; it belongs in the file the answer is written to.
-    $('card').innerHTML =
+    $('card').innerHTML = note +
       cardStale() +
       '<h2 class="cardq">Are these two voices the same person?</h2>' +
       '<button class="big" data-clip="a">Play the first voice</button>' +
@@ -869,7 +884,7 @@ function showCard() {
 
   const line = lines[card.at];
   select(card.at, { noScroll: true, silent: true });
-  $('card').innerHTML =
+  $('card').innerHTML = note +
     cardStale() +
     '<h2 class="cardq">Who said this?</h2>' +
     '<div class="cardsay">' + esc(shownText(line)) + '</div>' +
@@ -953,13 +968,17 @@ $('card').addEventListener('click', async (event) => {
       // would imply skipping was a commitment he has to justify. Do not make
       // this symmetrical with the answer path.
       lastCard = null;
-      fetch('/review/api/skip', {
+      const saved = await fetch('/review/api/skip', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           recording: convId, utterance_id: line.id, at_ms: line.at_ms,
           end_ms: line.end_ms, original_text: line.text,
         }),
-      }).catch(() => {});
+      }).then((response) => response.ok).catch(() => false);
+      receipt = saved
+        ? 'Saved for a laptop session.'
+        : 'That one could not be saved — it will come round again.';
+      if (!saved) { skipped.delete(line.id); line.skipped_at = null; }
       showCard();
       return;
     }
