@@ -1,5 +1,4 @@
 import type { Hono } from 'hono';
-import { MongoClient } from 'mongodb';
 import type {
   EnrollVoiceRequest,
   Fact,
@@ -11,15 +10,23 @@ import type {
   Utterance,
   Voiceprint,
 } from '../../shared/contracts';
+import { getStorage } from '../storage';
 import {
   createIdentityService,
   type IdentityCollection,
   type IdentityService,
+  type NameEnrollment,
   type VoiceprintCollection,
 } from './service';
 
-export { createIdentityService } from './service';
-export type { IdentityService, IdentityServiceOptions } from './service';
+export { UNNAMED_PERSON_NAME, createIdentityService } from './service';
+export type {
+  AttributionInput,
+  AttributionResult,
+  IdentityService,
+  IdentityServiceOptions,
+  NameEnrollment,
+} from './service';
 
 function collection<T>(value: unknown): IdentityCollection<T> {
   return value as IdentityCollection<T>;
@@ -29,29 +36,55 @@ function voiceprintCollection(value: unknown): VoiceprintCollection {
   return value as VoiceprintCollection;
 }
 
+/**
+ * Naming a voice is enrollment. The client sends the name; whoever holds the
+ * pooled speech for that voice — the audio session, or a client that captured
+ * an enrollment clip — may send it along, and it becomes a permanent print so
+ * the next session recognises them. The field is additive and optional, so the
+ * frozen NamePersonRequest contract still describes the body.
+ */
+type NamePersonBody = NamePersonRequest & { enrollment?: NameEnrollment };
+
+/**
+ * One identity service per bus.
+ *
+ * The wake gate in server/index.ts used to re-implement owner scoring against
+ * its own MongoClient and its own copy of the vector search, which is how the
+ * two drifted: attribution moved to session-mean-subtracted cosine while the
+ * wake gate stayed on raw Atlas scores. There should only ever be one place
+ * that decides whether a voice is the owner.
+ */
+const servicesByBus = new WeakMap<object, Promise<IdentityService>>();
+
+export function identityServiceFor(deps: ServerDependencies): Promise<IdentityService> {
+  const existing = servicesByBus.get(deps.bus);
+  if (existing) return existing;
+  const created = (async () => {
+    const storage = await getStorage();
+    return createIdentityService({
+      collections: {
+        people: collection<Person>(storage.collection<Person>('people')),
+        voiceprints: voiceprintCollection(storage.collection<Voiceprint>('voiceprints')),
+        utterances: collection<Utterance>(storage.collection<Utterance>('utterances')),
+        facts: collection<Fact>(storage.collection<Fact>('facts')),
+        promises: collection<PromiseMemory>(storage.collection<PromiseMemory>('promises')),
+      },
+      bus: deps.bus,
+    });
+  })();
+  servicesByBus.set(deps.bus, created);
+  return created.catch((error: unknown) => {
+    servicesByBus.delete(deps.bus);
+    throw error;
+  });
+}
+
 export function registerIdentityRoutes(app: Hono, deps: ServerDependencies): void {
   let servicePromise: Promise<IdentityService> | undefined;
 
   const getService = async (): Promise<IdentityService> => {
     if (!servicePromise) {
-      const uri = process.env.MONGODB_URI;
-      if (!uri) throw new Error('MONGODB_URI is required for identity routes');
-
-      servicePromise = (async () => {
-        const client = new MongoClient(uri);
-        await client.connect();
-        const db = client.db();
-        return createIdentityService({
-          collections: {
-            people: collection<Person>(db.collection<Person>('people')),
-            voiceprints: voiceprintCollection(db.collection<Voiceprint>('voiceprints')),
-            utterances: collection<Utterance>(db.collection<Utterance>('utterances')),
-            facts: collection<Fact>(db.collection<Fact>('facts')),
-            promises: collection<PromiseMemory>(db.collection<PromiseMemory>('promises')),
-          },
-          bus: deps.bus,
-        });
-      })();
+      servicePromise = identityServiceFor(deps);
     }
 
     try {
@@ -69,9 +102,26 @@ export function registerIdentityRoutes(app: Hono, deps: ServerDependencies): voi
   });
 
   app.post('/people/:id/name', async (context) => {
-    const request = await context.req.json<NamePersonRequest>();
-    const response = await (await getService()).namePerson(context.req.param('id'), request);
+    const { enrollment, ...request } = await context.req.json<NamePersonBody>();
+    const response = await (await getService()).namePerson(
+      context.req.param('id'),
+      request,
+      enrollment,
+    );
     return context.json(response);
+  });
+
+  /**
+   * Candidate duplicates, ranked. A GET because it decides nothing: the owner
+   * confirms one by POSTing it to /people/merge, which is the only path that
+   * writes. See server/identity/duplicates.ts for why it is split that way.
+   */
+  app.get('/people/duplicates', async (context) => {
+    const limit = Number(context.req.query('limit'));
+    const candidates = await (await getService()).duplicateCandidates(
+      Number.isFinite(limit) && limit > 0 ? { limit } : undefined,
+    );
+    return context.json({ candidates });
   });
 
   app.post('/people/merge', async (context) => {
