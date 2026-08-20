@@ -70,7 +70,16 @@ export function missingFixtureNotice(name: string): string {
  * it is measuring a transcript nothing produces any more.
  */
 export function realRecordingFixtures(stem: string): [whisper: string, pyannote: string] {
-  return [`${stem}.whisper.json`, `${stem}.pyannote.json`];
+  // Prefer the sentence-corrected turns. `session.ts` runs correctBySentence
+  // between diarization and the join, so raw pyannote turns are no longer what
+  // the product attributes from — a suite reading them measures a pipeline that
+  // was replaced. The naming assertions were doing exactly that, which is how a
+  // detection that rested on the old glued lines looked like a real win.
+  const corrected = `${stem}.sentpool.json`;
+  return [
+    `${stem}.whisper.json`,
+    hasRealFixture(corrected) ? corrected : `${stem}.pyannote.json`,
+  ];
 }
 
 export function hasRealRecording(stem: string): boolean {

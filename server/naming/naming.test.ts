@@ -697,6 +697,19 @@ describe('what is not a name being spelled', () => {
     ])).toEqual([]);
   });
 
+  it('declines the same letters coming back on another voice, which is a repeat-back', () => {
+    // The in-turn doubling guard only catches this while the join glues the
+    // speller and the checker together. A join that separates them correctly
+    // hands the identical run to two voices seconds apart, and it is the same
+    // echo — on the 48-minute recording, "M A R T" on two labels 2.6 s apart.
+    const spelled = spelling([
+      ['s1', 'sorry, what is your name again?'],
+      ['s2', 'M A R T'],
+      ['s3', 'M A R T'],
+    ]);
+    expect(spelled.filter((mention) => mention.frame === 'spelled')).toEqual([]);
+  });
+
   it('declines a run too short to be a name somebody needed spelled', () => {
     expect(spelling([
       ['s1', 'sorry, what is your name again?'],
@@ -722,6 +735,73 @@ describe('what is not a name being spelled', () => {
       ['s2', 'A N J A, I think. She left already.'],
     ]);
     expect(spelled.filter((mention) => mention.frame === 'spelled')).toEqual([]);
+  });
+});
+
+/**
+ * A join that draws its line boundaries differently must not change how much
+ * the module believes. These are the two places it did.
+ *
+ * The sentence pass in `server/audio` went from 767 lines to 1,032 on the
+ * 48-minute recording — more lines, shorter, each on one voice. Boris fell from
+ * 0.90 to 0.52 on identical speech, and neither cause was the one it looked
+ * like: his own evidence barely moved (0.898 to 0.872).
+ */
+describe('confidence that does not depend on where lines were drawn', () => {
+  const room = (lines: Array<[string, string]>) =>
+    suggestNames({ conversation_id: 'c', turns: turns(lines) });
+  const confidenceOf = (result: ReturnType<typeof room>, name: string) =>
+    result.suggestions.find((suggestion) => suggestion.name === name)?.confidence ?? 0;
+
+  it('gives one question one answer, even when the answer is inside the question\'s turn', () => {
+    // The real regression. Diarization glued "What's your name? ... I'm Vova."
+    // into one turn, so the question was already answered; the forward scan ran
+    // anyway and took a name from three turns later, landing a second
+    // first-person claim on a different voice. The two then argued and the
+    // real name lost 40% of its confidence.
+    const mentions = ruleMentions({
+      conversation_id: 'c',
+      turns: turns([
+        ['s2', "What's your name? I'm from Russia. I'm Nadia."],
+        ['s4', 'Okay, that makes sense to me.'],
+        ['s5', 'Nice to meet you.'],
+        ['s4', 'Yeah, Marcus. Marcus.'],
+      ]),
+    });
+    const answers = mentions.filter((mention) => mention.frame === 'name_answer');
+    expect(answers.map((mention) => mention.name)).toEqual(['Nadia']);
+    expect(mentions.some((mention) => mention.name === 'Marcus' && mention.target === 's4')).toBe(false);
+  });
+
+  it('still hears the answer when the question turn does not contain one', () => {
+    // The forward scan has to keep working; it is what finds a reply that
+    // landed in its own line.
+    const mentions = ruleMentions({
+      conversation_id: 'c',
+      turns: turns([['s1', "What's your name?"], ['s2', 'Marcus.']]),
+    });
+    expect(mentions.filter((mention) => mention.frame === 'name_answer').map((m) => [m.name, m.target])).toEqual([
+      ['Marcus', 's2'],
+    ]);
+  });
+
+  it('never scores a name repeated below the same name said once', () => {
+    // Repeating the answer is answering more insistently. It used to drop the
+    // turn out of the "nothing but the name" reading and into a weaker one,
+    // so saying it twice was worth less than saying it once.
+    const once = confidenceOf(room([['s1', 'What is your name?'], ['s2', 'Boris.']]), 'Boris');
+    for (const reply of ['Boris. Boris.', 'Boris. Boris. Boris.', 'uh, Boris. Boris.']) {
+      expect(confidenceOf(room([['s1', 'What is your name?'], ['s2', reply]]), 'Boris')).toBeGreaterThanOrEqual(once);
+    }
+  });
+
+  it('does not weaken a self-introduction when its line is split in two', () => {
+    const glued = confidenceOf(room([['s1', 'hey'], ['s2', "I'm Marcus. Nice to meet you."]]), 'Marcus');
+    const split = confidenceOf(
+      room([['s1', 'hey'], ['s2', "I'm Marcus."], ['s2', 'Nice to meet you.']]),
+      'Marcus',
+    );
+    expect(split).toBeGreaterThanOrEqual(glued);
   });
 });
 
@@ -923,7 +1003,12 @@ describe.skipIf(!hasRealFixture(WHISPER_FIXTURE) || !hasRealFixture(PYANNOTE_FIX
       const declined = upTo(48).suppressed.find((entry) => entry.name === 'Drew');
       expect(declined?.reason).toBe('voice_speaks_mostly_before_introduction');
       expect(declined?.speaker).toBe('SPEAKER_03');
-      expect(declined?.detail).toContain('92%');
+      // Not pinned to the exact share: it is a property of how the upstream
+      // join draws its lines, and it has already moved 93 -> 94 -> 92 -> 75 as
+      // that improved. What has to hold is that most of the voice predates the
+      // introduction, which is what makes the label more than one person.
+      const share = Number(/(\d+)%/.exec(declined?.detail ?? '')?.[1]);
+      expect(share).toBeGreaterThan(50);
     });
 
     it('never loses a name it had already heard as the recording runs on', () => {
