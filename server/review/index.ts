@@ -23,6 +23,7 @@ import {
   readCorrections,
   resolveLine,
   rosterFor,
+  skippedLines,
   splitsByUtterance,
   validateSplit,
   type Correction,
@@ -128,6 +129,7 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
       if (entry.utterance_id) flaggedLines.set(entry.utterance_id, entry.detail);
     }
     const splits = splitsByUtterance(file);
+    const skips = skippedLines(file, conversationId);
     const renames = new Map(
       file.person_renames
         .filter((rename) => rename.recording === conversationId)
@@ -169,6 +171,9 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
           ? { boundaries: splits.get(utterance._id)!.boundaries, parts: splits.get(utterance._id)!.parts }
           : null,
         anchor_warning: flaggedLines.get(utterance._id) ?? null,
+        // He looked at this and needed more than the card offered. Not a
+        // ruling, not untouched: a line worth someone's attention on a desktop.
+        skipped_at: skips.get(utterance._id) ?? null,
       };
     });
 
@@ -260,6 +265,7 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
         retracted: lines.filter((line) => line.retracted).length,
         contested: lines.filter((line) => line.ruling?.contested).length,
         remaining: lines.filter((line) => line.ruling === null && !line.split).length,
+        skipped: lines.filter((line) => line.skipped_at).length,
         split: lines.filter((line) => line.split).length,
       },
     });
@@ -584,6 +590,44 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
       result: null,
     }));
     return context.json({ ok: true, answer }, 201);
+  });
+
+  /**
+   * "I looked at this and could not answer it."
+   *
+   * One tap, no dialogue, nothing asked of him. The record asserts nothing and
+   * reaches no reference; it exists so the lines the card cannot serve are
+   * findable later instead of silently rejoining the pile of lines nobody has
+   * seen.
+   */
+  app.post('/review/api/skip', async (context) => {
+    const body = await context.req.json<{
+      recording: string;
+      utterance_id: string;
+      at_ms: number;
+      end_ms: number;
+      original_text?: string;
+    }>();
+    if (!body.utterance_id) return context.json({ error: 'which line?' }, 400);
+
+    const skip: Correction = {
+      id: crypto.randomUUID(),
+      kind: 'skip',
+      recording: body.recording,
+      utterance_id: body.utterance_id,
+      at_ms: body.at_ms,
+      end_ms: body.end_ms,
+      original_text: body.original_text ?? '',
+      original_speaker_id: null,
+      original_speaker_name: null,
+      asserts: [],
+      created_at: new Date().toISOString(),
+    };
+    await mutateCorrections((current) => ({
+      file: { ...current, corrections: [...current.corrections, skip] },
+      result: null,
+    }));
+    return context.json({ ok: true, skip }, 201);
   });
 
   app.get('/review/api/health', (context) => {

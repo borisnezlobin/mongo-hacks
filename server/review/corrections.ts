@@ -44,7 +44,21 @@ export type Dimension = 'speaker' | 'text';
  * has to be as though it never happened: a retracted ruling reaches no eval,
  * generates no landmark and does not count as reviewed.
  */
-export type RecordKind = 'assertion' | 'retraction';
+export type RecordKind = 'assertion' | 'retraction' | 'skip';
+
+/**
+ * "I looked at this and could not answer it."
+ *
+ * A different state from "not reached yet", and the more useful of the two: it
+ * marks the lines the phone card cannot serve — garbled words, a voice missing
+ * from the list, a line that needs splitting before anyone can attribute it.
+ * He has already told us those specific lines matter, which makes them worth
+ * more than a random hundred.
+ *
+ * It asserts nothing. No dimension is claimed, so it reaches no landmark, no
+ * span and no eval, and {@link resolveLine} deliberately reports a
+ * skipped-only line as untouched. It exists to be *seen*, on a desktop, later.
+ */
 
 export interface CorrectionSpeaker {
   /**
@@ -298,6 +312,9 @@ export function resolveLine(history: Correction[]): ResolvedLine | null {
       }
       continue;
     }
+    // A skip claims nothing, so it contributes no supplier and cannot make a
+    // line look reviewed. It is recorded to be found, not to be scored.
+    if (record.kind === 'skip') continue;
     for (const dimension of record.asserts) {
       if (dimension === 'speaker' && !record.speaker) continue;
       if (dimension === 'text' && record.text === undefined) continue;
@@ -589,4 +606,23 @@ export function liveIdentityAnswers(file: CorrectionsFile): Map<string, Identity
     live.set(answer.question_id, answer);
   }
   return live;
+}
+
+
+/** Lines he looked at and could not answer, most recent first. */
+export function skippedLines(file: CorrectionsFile, recording: string): Map<string, string> {
+  const skipped = new Map<string, string>();
+  for (const record of file.corrections) {
+    if (record.kind !== 'skip' || record.recording !== recording) continue;
+    skipped.set(record.utterance_id, record.created_at);
+  }
+  // A later ruling means he came back and dealt with it; the skip stops being
+  // interesting the moment it is answered.
+  for (const record of file.corrections) {
+    if (record.kind === 'skip' || record.kind === 'retraction') continue;
+    if (record.recording !== recording) continue;
+    const at = skipped.get(record.utterance_id);
+    if (at && record.created_at > at) skipped.delete(record.utterance_id);
+  }
+  return skipped;
 }
