@@ -24,9 +24,19 @@ export interface ChangeGraphInput {
   promises: PromiseMemory[];
 }
 
+/**
+ * Words too common to link a changed fact to the promises it affects.
+ *
+ * 'september' used to be in here. It came from the demo transcript, where
+ * everything happened in September, so the month carried no signal — but this
+ * is shipped ripple detection, and in September it would go blind to exactly
+ * the month the user is living in. Month names are ordinary content words in a
+ * calendar-shaped memory; the way to stop a common word dominating is
+ * frequency, not a hardcoded list of whatever the last fixture overused.
+ */
 const STOP_WORDS = new Set([
   'about', 'after', 'again', 'before', 'from', 'into', 'moving', 'that', 'their',
-  'there', 'they', 'this', 'with', 'your', 'september',
+  'there', 'they', 'this', 'with', 'your',
 ]);
 
 function words(text: string): string[] {
