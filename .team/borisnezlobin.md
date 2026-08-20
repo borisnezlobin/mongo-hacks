@@ -193,11 +193,12 @@ touched. New tools all live in `eval/real/`:
 - `turn_embeddings.py` gained `TURNEMB_SUFFIX` so a second embedding model no
   longer silently overwrites the wespeaker cache every other script reads.
 
-Two identities were recovered from the transcript rather than from voices, and
-want confirming: **jerry-45min/SPEAKER_04 is Boris** (says "Jerry" to somebody
-else six times) and **jerry-45min/SPEAKER_03 is Tarun** (says "Boris" to
-somebody else three times, and matches the owner-labelled Tarun spans at 0.88).
-Tarun in the Jerry recording is a fourth appearance nobody had recorded.
+**FALSIFIED — see "A wrong identification" below.** I reported two identities
+recovered from the transcript: `jerry-45min/SPEAKER_04` as Boris, and
+`jerry-45min/SPEAKER_03` as Tarun. The owner says Tarun was not there. The Boris
+one still stands on the audio; the Tarun one was wrong and the reasoning behind
+it was wrong twice over. Nothing in this file that names a speaker should be
+read as settled unless the owner said it — see the note at the end.
 
 ### What the speech-duration constants actually gate (2026-08-20)
 
@@ -365,3 +366,106 @@ Not built, flagged instead: `applyDecision`'s no-match branch mints even when a
 claim already owns those utterances, so an eviction mid-conversation could still
 produce a same-conversation duplicate. Pre-existing, not introduced here, and it
 changes minting — your call.
+- **The phone view is now a single card, and the tool is not rendered there at
+  all.** Below 760px `header`, `#ask`, `#cov`, `#people`, `main`, `#panel` and
+  `#done` are `display: none`; `#card` fills the screen with exactly one
+  decision. Question card: play A, play B, three answers. Line card: the
+  sentence, play, eight voices, skip. Answering renders the next card. This
+  replaced — not adjusted — the responsive layout, because he twice said he
+  could not work the phone out and the second time was *after* everything
+  already fit on screen. Fitting was never the problem.
+- Removed with it: the whole `@media (max-width: 760px)` layout block, the
+  `.mobonly` class, `#viewToggle`, `#prevLine`, `#nextLine`, `#editWords`,
+  `#panelLine`, `setView()` and the `body.view-questions` states. A test asserts
+  none of those names come back, so the two designs cannot both half-exist.
+- Two bias fixes worth keeping: neither identity answer is styled `primary` (a
+  recommended-looking "Yes" is a thumb on the scale in the one place we are
+  admitting we do not know), and the line card *names* the pipeline's guess
+  ("We think it was Boris") instead of ringing it silently — the suggestion is
+  present either way, so it should be stated and refusable rather than decoded.
+- Cluster ids never reach the card. `0:E vs 950:E` is retired bookkeeping and
+  belongs in the file the answer is written to; a test guards it.
+
+### A wrong identification, and what it costs the numbers (2026-08-20)
+
+The owner falsified `jerry-45min/SPEAKER_03 = Tarun`. Both legs of my argument
+were bad, and the second one is the dangerous kind because it carried a number.
+
+**Leg 1, the vocative, never had identifying power.** SPEAKER_03 says "Boris" to
+somebody else three times. That rules out his being Boris. It does not make him
+Tarun — it makes him one of everyone who talks to Boris. I used an exclusion as
+if it were an identification.
+
+**Leg 2, the 0.88 voice match, was against a label the owner contradicts.** The
+match was to the spans `dorm-40min` labels `tarun`, which come from a retired
+clustering pipeline. Checked against `eval/landmarks.ts`, that reference
+disagrees with the owner twice: the line he identified as **Dhruv** ("Drew.",
+2317470) is labelled **tarun**, and the line he identified as **Clara**
+(2466830) is labelled **boris**. Only one dorm-40min landmark agrees with the
+reference. All three dorm-9pm landmarks agree with theirs.
+
+**The number that settles it.** `dorm-9pm/tarun` is landmark-grounded — the
+owner named that line himself. Pooled and scored (eval/real/identity_audit.py):
+
+  dorm-9pm/tarun [grounded]  <-> dorm-40min/tarun [reference]   0.696
+  dorm-9pm/tarun [grounded]  <-> jerry-45min/SPEAKER_03         0.649   below 0.68
+  dorm-40min/tarun [reference] <-> jerry-45min/SPEAKER_03       0.807
+
+The Tarun I can trust does **not** match SPEAKER_03. The one that did is the one
+the owner's landmarks contradict. So this is a mislabelled reference on one side,
+not a demonstrated false accept between two correctly labelled people — though I
+cannot fully exclude the latter, because nobody knows who SPEAKER_03 is.
+
+**The false-accept rate I reported does not survive.** "0% over 1,620 trials"
+was never 1,620 independent trials: it was roughly 28 distinct speaker pairs
+resampled six ways at three pool sizes, and most of those pairs' identities came
+from transcript inference rather than from the owner. Counting only pairs whose
+labels are owner-grounded on BOTH sides:
+
+  same person, across recordings    1 pair   (dorm-9pm/boris <-> dorm-40min/boris, 0.866)
+  different people, across          2 pairs  (0.421, 0.436)
+  different people, within dorm-9pm 3 pairs  (0.369, 0.453, 0.584)
+
+Five impostor pairs, none above 0.68. By the rule of three that bounds the
+false-accept rate at roughly 60% with 95% confidence — which is to say **it is
+not bounded at all**. The honest statement is that no false accept has been
+observed among grounded pairs, on a sample far too small to claim a rate.
+
+**What still stands.** Boris links across all four recordings, and that chain has
+an owner-grounded anchor (`dorm-9pm/boris`, from the "let me download Luma"
+landmark): 0.765-0.866 across every pair of the four, against a cross-recording
+impostor maximum of 0.583 once the contaminated `tarun` label is dropped. The
+`mergeCandidates` evidence guard also stands — the pair it was built to suppress,
+Boris + Tarun at 0.681, has grounded labels on both sides.
+
+**Nobody knows who `jerry-45min/SPEAKER_03` is.** The owner suggested Alex,
+David or Brendan. Scored against every `mentra-mtg` cluster: 0.289, 0.460,
+0.289, 0.122 — none close. Reporting scores only; no new name.
+
+### Standing rule for this file
+
+An identification the owner has not confirmed is a **hypothesis**, whatever it
+scored. This one had a vocative argument and a 0.88 match and was still wrong.
+Label them as hypotheses in reports and here, and never let one become an input
+to a measurement without saying so in the result.
+- **Skips are recorded now.** Tapping "Skip this one" on the phone card writes a
+  `kind: 'skip'` correction: one tap, nothing asked of him. It asserts nothing —
+  `resolveLine` returns null for a skipped-only line, so it reaches no landmark,
+  no span and no eval, verified against the real store. What it buys is that
+  "I looked at this and could not answer" stops being indistinguishable from
+  "not reached yet". Those are the lines the card cannot serve — garbled words,
+  a voice not in the list, a line needing a split — and he has already told us
+  they matter, which makes them worth more than a random hundred.
+- They do not resurface on the phone, and a **Needed more** mode on the desktop
+  isolates them; rows carry a `needed more` badge and the header counts them. A
+  later ruling on the same line drops it from that list, because the skip stops
+  being interesting once he has dealt with it.
+- **Do not make skip symmetrical with answering.** "Change my last answer"
+  appears after a ruling and deliberately not after a skip: it takes back
+  something recorded *about the audio*, and a skip records no claim, so there is
+  nothing to withdraw and offering it would imply skipping was a commitment he
+  has to justify. There is a comment saying so and a test asserting it.
+- If the browser refuses to autoplay (iOS wants a gesture per element), the card
+  now says so: the replay button turns primary and reads "Tap to play this
+  line", so a silent card reads as tappable rather than broken. Verified by
+  stubbing `play()` to reject with NotAllowedError; it recovers on the next card.

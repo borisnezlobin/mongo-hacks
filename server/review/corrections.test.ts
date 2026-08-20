@@ -11,6 +11,7 @@ import {
   readCorrections,
   resolveLine,
   rosterFor,
+  skippedLines,
   assertedDimensions,
   findSplitConflicts,
   validateSplit,
@@ -267,5 +268,54 @@ describe('landmark names are only compared when this conversation knows them', (
     );
     expect(conflicts).toHaveLength(1);
     expect(conflicts[0].detail).toMatch(/boundary inside it/);
+  });
+});
+
+
+describe('a skip is information, not a ruling', () => {
+  const skip = (over: Partial<Correction> = {}) => correction({
+    id: 's1', kind: 'skip', asserts: [], speaker: undefined, text: undefined,
+    created_at: '2026-08-20T10:00:00.000Z', ...over,
+  });
+
+  it('leaves the line reading as untouched, so it reaches no reference', () => {
+    // "I looked at this and could not answer" must never become evidence about
+    // who spoke. It asserts nothing and is stored to be found, not scored.
+    expect(resolveLine([skip()])).toBeNull();
+  });
+
+  it('does not mark a line as retracted either', () => {
+    const resolved = resolveLine([skip()]);
+    expect(resolved).toBeNull();
+  });
+
+  it('cannot hide a real ruling made afterwards', () => {
+    const ruled = correction({ id: 'a', asserts: ['speaker'], speaker: { person_id: 'p1', name: 'Boris' }, created_at: '2026-08-20T11:00:00.000Z' });
+    expect(resolveLine([skip(), ruled])?.speaker?.name).toBe('Boris');
+  });
+
+  it('lists the lines he could not answer', () => {
+    const listed = skippedLines(file([skip({ utterance_id: 'u7' })]), 'dorm-40min');
+    expect([...listed.keys()]).toEqual(['u7']);
+  });
+
+  it('stops listing one he later came back and answered', () => {
+    const listed = skippedLines(file([
+      skip({ utterance_id: 'u7' }),
+      correction({ id: 'later', utterance_id: 'u7', asserts: ['speaker'], speaker: { person_id: 'p1', name: 'Boris' }, created_at: '2026-08-20T12:00:00.000Z' }),
+    ]), 'dorm-40min');
+    expect([...listed.keys()]).toEqual([]);
+  });
+
+  it('keeps listing one whose only later record is another skip', () => {
+    const listed = skippedLines(file([
+      skip({ utterance_id: 'u7' }),
+      skip({ id: 's2', utterance_id: 'u7', created_at: '2026-08-20T12:00:00.000Z' }),
+    ]), 'dorm-40min');
+    expect([...listed.keys()]).toEqual(['u7']);
+  });
+
+  it('ignores skips from a different recording', () => {
+    expect([...skippedLines(file([skip({ recording: 'dorm-9pm' })]), 'dorm-40min').keys()]).toEqual([]);
   });
 });

@@ -143,6 +143,8 @@ const REVIEW_PAGE_TEMPLATE = String.raw`<!doctype html>
   #status.bad { color: var(--alarm); font-weight: 600; }
 
   .row.retracted { border-left: 3px solid var(--rule); padding-left: 17px; opacity: .62; }
+  .row.skipped { border-left: 3px solid var(--edit); padding-left: 17px; }
+  .mark.sk { background: var(--edit-soft); color: var(--edit); }
   .row.hassplit { border-left: 3px solid var(--accent); padding-left: 17px; }
   .mark.sp { background: var(--accent-soft); color: var(--accent); }
   .mark.rt { background: #f1efea; color: var(--ink-faint); }
@@ -259,6 +261,7 @@ const REVIEW_PAGE_TEMPLATE = String.raw`<!doctype html>
   <span class="modepick">
     <button id="modeQueue" class="on">Worth most next</button>
     <button id="modeTime">In order</button>
+    <button id="modeSkipped">Needed more</button>
   </span>
   <span class="grow"></span>
   <span class="faint hints"><kbd>j</kbd><kbd>k</kbd> move &nbsp; <kbd>space</kbd> play line &nbsp; <kbd>c</kbd> with context &nbsp; <kbd>enter</kbd> correct as-is &nbsp; <kbd>e</kbd> edit words &nbsp; <kbd>1</kbd>-<kbd>9</kbd> speaker &nbsp; <kbd>x</kbd> split &nbsp; <kbd>u</kbd> undo</span>
@@ -385,12 +388,14 @@ async function playRange(key, startMs, endMs, label, quiet) {
     // Autoplay on advance must not talk over "Boris saved. Next: ...", which is
     // the only confirmation he gets that the last ruling landed.
     if (!quiet) status(label || '');
+    return true;
   } catch (error) {
     // Selecting twice quickly (undo does) aborts the first play. That is the
     // browser working as designed, not a broken span, and saying otherwise
     // teaches him to distrust the one message that does mean something.
     const interrupted = error && (error.name === 'AbortError' || /interrupted|aborted/i.test(error.message || ''));
     if (!interrupted) status('could not play that span: ' + error.message, true);
+    return false;
   }
 }
 
@@ -465,6 +470,7 @@ function paintRow(row, line, i) {
   else if (parts) classes.push('hassplit');
   else if (speakerChanged || textChanged) classes.push('edited');
   else if (ruling) classes.push('ruled');
+  else if (line.skipped_at) classes.push('skipped');
   else if (line.retracted) classes.push('retracted');
   row.className = classes.join(' ');
 
@@ -474,6 +480,7 @@ function paintRow(row, line, i) {
   if (asserted.indexOf('text') >= 0) marks.push('<span class="mark ' + (textChanged ? 'ed' : 'ok') + '">words</span>');
   if (parts) marks.push('<span class="mark sp">' + parts.length + ' parts</span>');
   if (!parts && !ruling && line.retracted) marks.push('<span class="mark rt">undone</span>');
+  if (!parts && !ruling && line.skipped_at) marks.push('<span class="mark sk">needed more</span>');
 
   row.innerHTML =
     '<div class="t">' + stamp(line.at_ms) + '</div>' +
@@ -673,10 +680,12 @@ function refreshCounts() {
   const dark = coverage ? coverage.speakers.filter((speaker) => speaker.confirmed === 0).length : 0;
   const wanted = coverage ? coverage.speakers.reduce((sum, speaker) => sum + speaker.wanted, 0) : 0;
   const openQ = questions.filter((question) => !question.answer).length;
+  const skippedCount = lines.filter((line) => line.skipped_at).length;
   $('summary').textContent =
     (openQ ? openQ + ' question' + (openQ === 1 ? '' : 's') + ' worth minutes each · ' : '') +
     (coverage ? dark + ' voices with no ground truth · ' + wanted + ' confirmations to go' : ruled + ' of ' + lines.length) +
-    (contested ? ' · ' + contested + ' flagged' : '');
+    (contested ? ' · ' + contested + ' flagged' : '') +
+    (skippedCount ? ' · ' + skippedCount + ' needed more than the card' : '');
 }
 
 /**
@@ -812,7 +821,10 @@ function nextCard() {
   if (question) return { kind: 'question', question: question };
   for (const at of orderedIndices()) {
     const line = lines[at];
-    if (!line.ruling && !line.split && !skipped.has(line.id)) return { kind: 'line', at: at };
+    // A skip recorded in an earlier session must not come back at him here. It
+    // is answerable on a desktop, where the words can be fixed and a line can
+    // be split.
+    if (!line.ruling && !line.split && !line.skipped_at && !skipped.has(line.id)) return { kind: 'line', at: at };
   }
   return { kind: 'done' };
 }
@@ -862,6 +874,10 @@ function showCard() {
     '<h2 class="cardq">Who said this?</h2>' +
     '<div class="cardsay">' + esc(shownText(line)) + '</div>' +
     '<button class="big" data-replay="1">Play it again</button>' +
+    (people.some((person) => person.id === line.person_id)
+      ? '<p class="cardnote">We think it was ' + esc(voiceLabel(people.find((person) => person.id === line.person_id))) +
+        '. Tap that to agree, or pick whoever really said it.</p>'
+      : '') +
     '<div class="choices voices">' +
       people.map((person) =>
         '<button class="big' + (person.id === line.person_id ? ' suggested' : '') + '" data-voice="' + esc(person.id) + '">' +
@@ -870,7 +886,20 @@ function showCard() {
     '<div class="out"><button class="big" data-skip="1">Skip this one</button>' + undo + '</div>';
   $('card').dataset.kind = 'line';
   $('card').dataset.at = String(card.at);
-  play(0, true);
+
+  // If the browser refuses to autoplay — iOS wants a gesture per element — the
+  // card would otherwise sit there looking like it should be making a sound.
+  // Better to say so and make the one useful button obviously the thing to tap.
+  const started = play(0, true);
+  if (started && started.then) {
+    started.then((ok) => {
+      if (ok !== false || $('card').dataset.at !== String(card.at)) return;
+      const replay = $('card').querySelector('[data-replay]');
+      if (!replay) return;
+      replay.className = 'big primary';
+      replay.textContent = 'Tap to play this line';
+    });
+  }
 }
 
 $('card').addEventListener('click', async (event) => {
@@ -915,7 +944,25 @@ $('card').addEventListener('click', async (event) => {
   if (kind === 'line') {
     const line = lines[Number($('card').dataset.at)];
     if (event.target.closest('[data-replay]')) { play(0, true); return; }
-    if (event.target.closest('[data-skip]')) { skipped.add(line.id); lastCard = null; showCard(); return; }
+    if (event.target.closest('[data-skip]')) {
+      skipped.add(line.id);
+      line.skipped_at = new Date().toISOString();
+      // Deliberately no undo offered after this. "Change my last answer" exists
+      // to take back something that was recorded ABOUT the audio; a skip
+      // asserts nothing, so there is nothing to take back, and offering it
+      // would imply skipping was a commitment he has to justify. Do not make
+      // this symmetrical with the answer path.
+      lastCard = null;
+      fetch('/review/api/skip', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording: convId, utterance_id: line.id, at_ms: line.at_ms,
+          end_ms: line.end_ms, original_text: line.text,
+        }),
+      }).catch(() => {});
+      showCard();
+      return;
+    }
     const voice = event.target.closest('[data-voice]');
     if (!voice) return;
     const person = people.find((candidate) => candidate.id === voice.dataset.voice);
@@ -939,8 +986,20 @@ $('done').addEventListener('click', (event) => {
 });
 
 $('nextAction').onclick = () => advance();
-$('modeQueue').onclick = () => { mode = 'queue'; $('modeQueue').className = 'on'; $('modeTime').className = ''; select(orderedIndices()[0] ?? 0); };
-$('modeTime').onclick = () => { mode = 'time'; $('modeTime').className = 'on'; $('modeQueue').className = ''; status('reading in recording order'); };
+$('modeQueue').onclick = () => { mode = 'queue'; setModeButtons('modeQueue'); select(orderedIndices()[0] ?? 0); };
+$('modeTime').onclick = () => { mode = 'time'; setModeButtons('modeTime'); status('reading in recording order'); };
+$('modeSkipped').onclick = () => {
+  mode = 'skipped';
+  setModeButtons('modeSkipped');
+  const first = orderedIndices()[0];
+  if (first === undefined) { status('nothing skipped yet'); return; }
+  select(first);
+  status('lines he looked at on his phone and could not answer from the card alone');
+};
+
+function setModeButtons(active) {
+  for (const id of ['modeQueue', 'modeTime', 'modeSkipped']) $(id).className = id === active ? 'on' : '';
+}
 $('pad').onchange = () => prefetch(Number($('pad').value));
 $('conv').onchange = () => loadConversation($('conv').value);
 
@@ -975,6 +1034,9 @@ let coverage = null;
  */
 function orderedIndices() {
   if (mode === 'time') return lines.map((_, i) => i);
+  // Lines he looked at on his phone and could not answer. He has already told
+  // us these matter, which makes them worth more than a random hundred.
+  if (mode === 'skipped') return lines.map((_, i) => i).filter((i) => lines[i].skipped_at);
   const position = new Map(lines.map((line, i) => [line.id, i]));
   const ordered = [];
   for (const entry of queue) {
