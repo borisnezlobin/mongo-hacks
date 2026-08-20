@@ -22,7 +22,16 @@ import type { Turn } from './provider';
 import { TOOL_STEP, type Stepper } from './steps';
 import { TOOLS, runTool } from './tools';
 
-const SYSTEM = `You are Amelia. You are the owner's memory of the people in their life.
+/**
+ * Built per request, not once at import.
+ *
+ * "Today" used to be baked in when the module first loaded, so a server left
+ * running overnight told the model the wrong date indefinitely — and every
+ * "tomorrow" or "tonight" it resolved into a promise was then filed against the
+ * wrong day, which is exactly the kind of error nobody notices until a reminder
+ * fires late.
+ */
+const systemPrompt = (today = new Date()) => `You are Amelia. You are the owner's memory of the people in their life.
 
 You are answering out loud, in a room, while the conversation continues around you.
 Keep spoken replies to one or two sentences. No preamble, no restating the question,
@@ -34,7 +43,20 @@ When a request branches on such a fact ("if she's already moved… if she hasn't
 resolve the fact first, decide the branch yourself, and act on that one branch only.
 Never ask the owner which branch applies.
 
-Today is ${new Date().toISOString().slice(0, 10)}.
+Questions about a stretch of conversation — what was discussed, who was in the room,
+what somebody spent an evening talking about — are answered by gathering context for a
+scope, not by searching for words the question happens to contain. A broad question
+usually contains no words worth searching for.
+
+Say who said what, using the speaker label on the line you are drawing from. A voice
+that has not been named stays "Speaker 2"; never put a name to one, and never move a
+remark from one speaker to another.
+
+What you are given is a sample of the conversation, not all of it. Answer from it and
+say when something is not there. Never fill a gap from general knowledge — being wrong
+about a real person costs more than admitting you do not know.
+
+Today is ${today.toISOString().slice(0, 10)}.
 
 Email is always a draft for the owner to review. Never claim you sent one.
 Refer to people by name, not by id, when you speak.`;
@@ -98,7 +120,7 @@ export async function runAmelia({
     if (signal?.aborted) return outcome({ aborted: true });
 
     const completion = await provider.complete({
-      system: SYSTEM,
+      system: systemPrompt(),
       turns,
       tools: TOOLS,
       allowTools: toolCallsUsed < AMELIA_MAX_TOOL_CALLS,

@@ -1,4 +1,5 @@
 import { OWNER_AUTH_THRESHOLD, type Id, type UtteranceEvent } from '../../shared/contracts';
+import { loadEnv } from '../memory/env';
 
 /**
  * The owner's PERSON id — not `OWNER_ID` from contracts.
@@ -8,7 +9,13 @@ import { OWNER_AUTH_THRESHOLD, type Id, type UtteranceEvent } from '../../shared
  * "Yan", `is_owner: true` in fixtures/seed.mjs), and that is what an
  * utterance's `person_id` holds. Comparing the two is always false, which
  * silently disables the voice gate.
+ *
+ * loadEnv() runs first on purpose. This is read at import time, and the env
+ * file is otherwise loaded lazily by the first caller that needs a secret — so
+ * an OWNER_PERSON_ID set in .env was simply not visible yet, and the default
+ * below won every time regardless of configuration.
  */
+loadEnv();
 export const OWNER_PERSON_ID: Id = process.env.OWNER_PERSON_ID ?? 'p-amelia-owner';
 
 /** Matched case- and punctuation-insensitively. */

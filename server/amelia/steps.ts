@@ -38,6 +38,9 @@ export function createStepper(requestId: Id, emit: Emit): Stepper {
 /** Which enum bucket each tool reports under. */
 export const TOOL_STEP: Record<string, StepKind> = {
   search_memory: 'search',
+  gather_context: 'search',
+  list_conversations: 'search',
+  list_people: 'search',
   get_person: 'search',
   resolve_fact_state: 'search',
   draft_email: 'act',
