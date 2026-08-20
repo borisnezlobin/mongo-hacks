@@ -43,6 +43,16 @@ export function formatDuration(startIso: string, endIso?: string): string {
   return `${minutes} min`;
 }
 
+/** m:ss. The recording clock and the transcript's turn offsets are the same format. */
+export function formatClock(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  return `${Math.floor(safe / 60)}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+export function formatOffset(milliseconds: number): string {
+  return formatClock(milliseconds / 1000);
+}
+
 export function attributeLabel(attribute: string): string {
   const spaced = attribute.replace(/[_-]+/g, ' ').trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);

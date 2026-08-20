@@ -1,8 +1,10 @@
+import { memo } from 'react';
 import { Image, View } from 'react-native';
 import Svg, { Rect } from 'react-native-svg';
 import { colors, radii } from '../constants/theme';
 import { identiconFor } from '../lib/identicon';
-import type { PersonRecord } from '../lib/store';
+import { useAvatarUri } from '../state/hooks';
+import type { PersonRecord } from '../state/reducer';
 
 interface AvatarProps {
   person?: PersonRecord;
@@ -13,15 +15,21 @@ interface AvatarProps {
   shape?: 'circle' | 'rounded';
 }
 
-export function Avatar({ person, seed, size = 40, shape = 'circle' }: AvatarProps) {
+/**
+ * The picture is looked up by person id from the one place pictures live. It used to be
+ * copied onto the person record as well, and a person the naming sheet created from
+ * scratch was built without that field — so naming a face lost its photo.
+ */
+export const Avatar = memo(function Avatar({ person, seed, size = 40, shape = 'circle' }: AvatarProps) {
+  const uri = useAvatarUri(person?._id);
   const identiconSeed = person?.voiceprint_id ?? seed ?? person?._id ?? 'unknown';
   const { background, ink, cells } = identiconFor(identiconSeed);
   const cornerRadius = shape === 'circle' ? size / 2 : size * 0.22;
 
-  if (person?.avatar_uri) {
+  if (uri) {
     return (
       <Image
-        source={{ uri: person.avatar_uri }}
+        source={{ uri }}
         style={{ width: size, height: size, borderRadius: cornerRadius, backgroundColor: colors.canvasSunken }}
       />
     );
@@ -56,4 +64,4 @@ export function Avatar({ person, seed, size = 40, shape = 'circle' }: AvatarProp
       </Svg>
     </View>
   );
-}
+});

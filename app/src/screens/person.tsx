@@ -1,33 +1,27 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import * as ImagePicker from 'expo-image-picker';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import {
-  CameraIcon,
-  CaretLeftIcon,
-  CaretRightIcon,
-  CheckCircleIcon,
-  CircleIcon,
-  ClockIcon,
-  PencilSimpleIcon,
-} from 'phosphor-react-native';
-import type { Id } from '../../../shared/contracts';
+import { CameraIcon, CaretRightIcon, PencilSimpleIcon } from 'phosphor-react-native';
+import type { Id, PromiseMemory } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
+import { BackRow } from '../components/back-row';
+import { PromiseRow } from '../components/promise-row';
 import { Card, Chip, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
-import { attributeLabel, formatDay, formatDue } from '../lib/format';
+import { attributeLabel, formatDay } from '../lib/format';
 import { saveAvatar } from '../lib/avatars';
 import { useNavigation } from '../lib/navigation';
 import {
-  displayName,
-  isUnnamed,
   useConversations,
   useCurrentFacts,
+  useOwnerId,
+  usePerson,
   usePromisesFor,
-  useStore,
   useSupersededFacts,
-  OWNER_PERSON_ID,
-} from '../lib/store';
+} from '../state/hooks';
+import { displayName, isUnnamed } from '../state/reducer';
+import { useActions } from '../state/store';
 
 interface PersonScreenProps {
   personId: Id;
@@ -36,13 +30,14 @@ interface PersonScreenProps {
 }
 
 export function PersonScreen({ personId, onRename, contentInset }: PersonScreenProps) {
-  const { state, setAvatar, closePromise, reopenPromise } = useStore();
-  const navigation = useNavigation();
-  const person = state.people[personId];
+  const person = usePerson(personId);
   const facts = useCurrentFacts(personId);
   const superseded = useSupersededFacts(personId);
   const promises = usePromisesFor(personId);
   const conversations = useConversations();
+  const ownerId = useOwnerId();
+  const navigation = useNavigation();
+  const actions = useActions();
 
   const theirConversations = useMemo(
     () => conversations.filter((conversation) => conversation.participant_ids.includes(personId)),
@@ -57,9 +52,17 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
     return map;
   }, [superseded]);
 
+  const toggle = useCallback(
+    (promiseId: string, status: PromiseMemory['status']) => void actions.setPromiseStatus(promiseId, status),
+    [actions],
+  );
+
   const pickAvatar = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) return;
+    if (!permission.granted) {
+      actions.notify('Amelia needs photo access to set a picture.');
+      return;
+    }
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
@@ -67,9 +70,13 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
       quality: 0.8,
     });
     if (result.canceled || !result.assets[0]) return;
-    // The picker's URI points into the cache, which is both wiped on reload and
-    // eligible for eviction. Copy it somewhere permanent first.
-    setAvatar(personId, saveAvatar(personId, result.assets[0].uri));
+    try {
+      // The picker's URI points into the cache, which is both wiped on reload and
+      // eligible for eviction. Copy it somewhere permanent first.
+      actions.setAvatar(personId, saveAvatar(personId, result.assets[0].uri));
+    } catch {
+      actions.notify("Couldn't save that picture.");
+    }
   };
 
   if (!person) {
@@ -81,8 +88,11 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
     );
   }
 
-  const owed = promises.filter((promise) => promise.person_id !== OWNER_PERSON_ID);
-  const owing = promises.filter((promise) => promise.person_id === OWNER_PERSON_ID);
+  // "You owe them" means a promise the owner made, and who the owner is comes from the
+  // store rather than a seed constant.
+  const isOwnerProfile = person._id === ownerId;
+  const owed = isOwnerProfile ? [] : promises;
+  const owing = ownerId ? promises.filter((promise) => promise.person_id === ownerId) : [];
 
   return (
     <View style={styles.container}>
@@ -110,6 +120,7 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
             {person.relationship ? (
               <AppText variant="body" color={colors.inkMuted}>{person.relationship}</AppText>
             ) : null}
+            {person.is_owner ? <Chip label="You" tone="accent" /> : null}
             {isUnnamed(person) ? (
               <Pressable onPress={() => onRename(personId)} style={styles.namePrompt}>
                 <AppText variant="caption" color={colors.accent}>Give this voice a name</AppText>
@@ -144,28 +155,16 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
           <View style={styles.section}>
             <SectionHeader title={`${displayName(person)} owes you`} />
             {owed.map((promise) => (
-              <PromiseRow
-                key={promise._id}
-                text={promise.text}
-                due={promise.due_at}
-                done={promise.status !== 'open'}
-                onToggle={() => (promise.status === 'open' ? closePromise(promise._id) : reopenPromise(promise._id))}
-              />
+              <PromiseRow key={promise._id} promise={promise} onToggle={toggle} />
             ))}
           </View>
         ) : null}
 
-        {owing.length > 0 ? (
+        {isOwnerProfile && owing.length > 0 ? (
           <View style={styles.section}>
-            <SectionHeader title="You owe them" />
+            <SectionHeader title="You owe" />
             {owing.map((promise) => (
-              <PromiseRow
-                key={promise._id}
-                text={promise.text}
-                due={promise.due_at}
-                done={promise.status !== 'open'}
-                onToggle={() => (promise.status === 'open' ? closePromise(promise._id) : reopenPromise(promise._id))}
-              />
+              <PromiseRow key={promise._id} promise={promise} onToggle={toggle} />
             ))}
           </View>
         ) : null}
@@ -195,51 +194,8 @@ export function PersonScreen({ personId, onRename, contentInset }: PersonScreenP
   );
 }
 
-function BackRow({ onPress }: { onPress(): void }) {
-  return (
-    <Pressable onPress={onPress} style={styles.backRow} accessibilityLabel="Back" hitSlop={8}>
-      <CaretLeftIcon size={20} color={colors.ink} />
-      <AppText variant="bodyStrong">Back</AppText>
-    </Pressable>
-  );
-}
-
-function PromiseRow({
-  text,
-  due,
-  done,
-  onToggle,
-}: {
-  text: string;
-  due?: string;
-  done: boolean;
-  onToggle(): void;
-}) {
-  return (
-    <Pressable onPress={onToggle} style={({ pressed }) => [styles.promiseRow, pressed && styles.pressed]}>
-      {done
-        ? <CheckCircleIcon size={21} color={colors.positive} weight="fill" />
-        : <CircleIcon size={21} color={colors.lineStrong} />}
-      <View style={styles.flexible}>
-        <AppText variant="body" style={done ? styles.doneText : undefined}>{text}</AppText>
-        <View style={styles.dueRow}>
-          <ClockIcon size={12} color={colors.inkFaint} />
-          <AppText variant="caption">{formatDue(due)}</AppText>
-        </View>
-      </View>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    paddingHorizontal: layout.screenPadding,
-    paddingBottom: spacing.sm,
-  },
   scroll: { paddingHorizontal: layout.screenPadding, gap: spacing.xl, paddingTop: spacing.sm },
   missing: { paddingHorizontal: layout.screenPadding },
   profile: { flexDirection: 'row', gap: spacing.lg, alignItems: 'center' },
@@ -261,9 +217,6 @@ const styles = StyleSheet.create({
   section: { gap: spacing.sm },
   factCard: { gap: spacing.sm },
   factHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  promiseRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, paddingVertical: spacing.md },
-  dueRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 2 },
-  doneText: { textDecorationLine: 'line-through', color: colors.inkFaint },
   conversationRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md, paddingVertical: spacing.md },
   flexible: { flex: 1, flexShrink: 1 },
   pressed: { opacity: 0.6 },

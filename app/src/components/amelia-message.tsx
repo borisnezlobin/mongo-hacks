@@ -1,15 +1,15 @@
-import { useEffect, useRef } from 'react';
+import { memo, useEffect, useRef } from 'react';
 import { ActivityIndicator, Animated, Easing, StyleSheet, View } from 'react-native';
 import { SpeakerHighIcon } from 'phosphor-react-native';
 import { AppText } from './app-text';
 import { colors, radii, spacing } from '../constants/theme';
-import type { AmeliaTurn } from '../lib/store';
+import type { AmeliaTurn } from '../state/reducer';
 
 /**
  * Amelia is one message in the transcript, not a stream of them. Steps accumulate inside
  * it and the spoken answer replaces the trace when it lands.
  */
-export function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
+export const AmeliaMessage = memo(function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
   const entrance = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -72,9 +72,9 @@ export function AmeliaMessage({ turn }: { turn: AmeliaTurn }) {
       </View>
     </Animated.View>
   );
-}
+});
 
-function StepLine({ message, faded }: { message: string; faded: boolean }) {
+const StepLine = memo(function StepLine({ message, faded }: { message: string; faded: boolean }) {
   const fade = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -86,7 +86,7 @@ function StepLine({ message, faded }: { message: string; faded: boolean }) {
       <AppText variant="caption" color={faded ? colors.inkFaint : colors.inkMuted}>{message}</AppText>
     </Animated.View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.lg },

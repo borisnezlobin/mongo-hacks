@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { AUDIO_FRAME_BYTES, AUDIO_FRAME_SAMPLES } from '../../shared/contracts'
-import { AudioFramePacketizer, buildStreamUrl } from './uplink-buffer'
+import { AudioFramePacketizer } from './uplink-buffer'
+import { streamUrl } from '../src/lib/urls'
 
 describe('audio uplink framing', () => {
   it('builds ws and wss stream URLs without duplicate slashes', () => {
-    expect(buildStreamUrl('http://localhost:3000/')).toBe('ws://localhost:3000/stream')
-    expect(buildStreamUrl('https://amelia.example')).toBe('wss://amelia.example/stream')
+    expect(streamUrl('http://localhost:3000/')).toBe('ws://localhost:3000/stream')
+    expect(streamUrl('https://amelia.example')).toBe('wss://amelia.example/stream')
   })
 
   it('emits exact 6400-byte frames and retains the remainder', () => {

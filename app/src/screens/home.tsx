@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 import {
   ArrowUpIcon,
@@ -7,88 +7,35 @@ import {
   MagnifyingGlassIcon,
   XIcon,
 } from 'phosphor-react-native';
+import type { Conversation } from '../../../shared/contracts';
 import { AppText } from '../components/app-text';
 import { Avatar } from '../components/avatar';
 import { SwipeToDelete } from '../components/swipe-to-delete';
 import { Card, Chip, EmptyState, SectionHeader } from '../components/ui';
 import { colors, layout, radii, spacing } from '../constants/theme';
-import { api } from '../lib/api';
 import { useAsk } from '../lib/ask';
 import { formatDay, formatDuration } from '../lib/format';
 import { useNavigation } from '../lib/navigation';
-import { displayName, useConversations, useStore, type PersonRecord } from '../lib/store';
+import { useLiveConversationId, useListedConversations, useOpenPromiseCount, usePerson } from '../state/hooks';
+import { displayName } from '../state/reducer';
+import { useActions, useSelector } from '../state/store';
 
 interface HomeScreenProps {
   contentInset: number;
 }
 
 export function HomeScreen({ contentInset }: HomeScreenProps) {
-  const { state, ingest, upsertConversations, upsertPeople, deleteConversation } = useStore();
-  const conversations = useConversations();
+  const conversations = useListedConversations();
+  const openPromiseCount = useOpenPromiseCount();
+  const liveConversationId = useLiveConversationId();
   const navigation = useNavigation();
+  const actions = useActions();
   const { ask, clear, pending, result } = useAsk();
   const [query, setQuery] = useState('');
 
+  const submit = () => ask(query);
 
-  const openPromiseCount = useMemo(
-    () => Object.values(state.promises).filter((promise) => promise.status === 'open').length,
-    [state.promises],
-  );
-
-  // A conversation with no turns is a shell — a session that captured nothing, or a record
-  // whose utterances have not loaded. Listing them gives you rows that open onto nothing.
-  const utteranceCounts = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const utterance of Object.values(state.utterances)) {
-      counts[utterance.conversation_id] = (counts[utterance.conversation_id] ?? 0) + 1;
-    }
-    return counts;
-  }, [state.utterances]);
-  const listedConversations = conversations.filter((c) => (utteranceCounts[c._id] ?? 0) > 0);
-
-  // Recent conversations came only from what this app instance had seen, so past
-  // recordings were invisible after a restart. Pull the server's list and hydrate each
-  // one's turns; utterances are keyed by id, so re-seeing them is a no-op.
-  useEffect(() => {
-    let cancelled = false;
-    // Without the people list, every attributed turn still renders as "Unknown speaker":
-    // the utterance has a person_id but nothing to resolve it against.
-    void api.listPeople().then((people) => { if (!cancelled) upsertPeople(people); }).catch(() => {});
-    void api.listConversations()
-      .then(async (conversations) => {
-        if (cancelled) return;
-        upsertConversations(conversations);
-        for (const conversation of conversations.slice(0, 8)) {
-          if (cancelled) return;
-          const summary = await api.getConversation(conversation._id).catch(() => null);
-          if (!summary || cancelled) continue;
-          for (const utterance of summary.utterances) {
-            ingest({
-              type: 'utterance',
-              utterance_id: utterance._id,
-              conversation_id: utterance.conversation_id,
-              person_id: utterance.person_id,
-              voiceprint_id: utterance.voiceprint_id,
-              text: utterance.text,
-              start_ms: utterance.start_ms,
-              end_ms: utterance.end_ms,
-              is_final: utterance.is_final,
-            });
-          }
-        }
-      })
-      .catch(() => {
-        // No server yet: seeded and live data still render.
-      });
-    return () => { cancelled = true; };
-  }, [ingest, upsertConversations, upsertPeople]);
-
-
-  const submit = () => {
-    ask(query);
-  };
-
-  const confirmDelete = (conversationId: string, title: string) => {
+  const confirmDelete = useCallback((conversationId: string, title: string) => {
     Alert.alert(
       `Delete "${title}"?`,
       'The transcript and anything Amelia remembered from it are removed. This cannot be undone.',
@@ -97,14 +44,18 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
         {
           text: 'Delete',
           style: 'destructive',
-          onPress: async () => {
-            deleteConversation(conversationId);
-            await api.deleteConversation(conversationId).catch(() => {});
-          },
+          // Optimistic, but a refusal puts it back and says so rather than letting it
+          // reappear silently on the next hydrate.
+          onPress: () => void actions.deleteConversation(conversationId),
         },
       ],
     );
-  };
+  }, [actions]);
+
+  const openConversation = useCallback(
+    (conversationId: string) => navigation.openConversation(conversationId),
+    [navigation],
+  );
 
   return (
     <View style={styles.container}>
@@ -124,33 +75,22 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-
-
         {result ? (
           <Card style={styles.answerCard}>
             <View style={styles.answerHeader}>
               <AppText variant="label" color={colors.accent}>Amelia</AppText>
-              {result.local ? <Chip label="From this phone" /> : null}
+              {result.local ? <Chip label="Answered from this phone" /> : null}
             </View>
             <AppText variant="body">{result.text}</AppText>
-            {result.citations.map((citation) => {
-              const person = citation.person_id ? state.people[citation.person_id] : undefined;
-              return (
-                <Pressable
-                  key={`${citation.kind}-${citation.id}`}
-                  style={styles.citation}
-                  onPress={() => person && navigation.openPerson(person._id)}
-                >
-                  <Avatar person={person} size={26} />
-                  <View style={styles.citationCopy}>
-                    <AppText variant="body">{citation.text}</AppText>
-                    <AppText variant="caption">
-                      {person ? displayName(person) : 'Unattributed'} · {citation.kind}
-                    </AppText>
-                  </View>
-                </Pressable>
-              );
-            })}
+            {result.citations.map((citation) => (
+              <Citation
+                key={`${citation.kind}-${citation.id}`}
+                personId={citation.person_id}
+                text={citation.text}
+                kind={citation.kind}
+                onOpenPerson={navigation.openPerson}
+              />
+            ))}
           </Card>
         ) : null}
 
@@ -187,62 +127,108 @@ export function HomeScreen({ contentInset }: HomeScreenProps) {
 
         <View style={styles.section}>
           <SectionHeader title="Recent conversations" />
-          {listedConversations.length === 0 ? (
+          {conversations.length === 0 ? (
             <EmptyState
               icon={ChatsCircleIcon}
               title="Nothing recorded yet"
               body="Start listening and the room fills in here, speaker by speaker."
             />
           ) : (
-            listedConversations.map((conversation) => {
-              const participants = conversation.participant_ids
-                .map((id) => state.people[id])
-                .filter(Boolean) as PersonRecord[];
-              const isLive = conversation._id === state.liveConversationId;
-              const title = conversation.title ?? 'Untitled conversation';
-              return (
-                <SwipeToDelete
-                  key={conversation._id}
-                  onDelete={() => confirmDelete(conversation._id, title)}
-                >
-                <Pressable
-                  onPress={() => navigation.openConversation(conversation._id)}
-                  style={({ pressed }) => [styles.conversationRow, pressed && styles.dimmed]}
-                >
-                  {/* Copy first, avatars after. A leading avatar stack is as wide as the
-                      conversation has participants, so every title started at a different
-                      x and the list could not be read down the left edge. */}
-                  <View style={styles.conversationCopy}>
-                    <View style={styles.conversationTitleRow}>
-                      <AppText variant="bodyStrong" numberOfLines={1} style={styles.flexible}>
-                        {title}
-                      </AppText>
-                      {isLive ? <Chip label="Live" tone="live" /> : null}
-                    </View>
-                    <AppText variant="caption" numberOfLines={1}>
-                      {formatDay(conversation.started_at)}
-                      {conversation.ended_at ? ` · ${formatDuration(conversation.started_at, conversation.ended_at)}` : ''}
-                      {participants.length > 0 ? ` · ${participants.map((person) => displayName(person)).join(', ')}` : ''}
-                    </AppText>
-                  </View>
-                  <View style={styles.conversationAvatars}>
-                    {participants.slice(0, 3).map((person, index) => (
-                      <View key={person._id} style={[styles.stackedAvatar, index > 0 && styles.stackedAvatarOverlap]}>
-                        <Avatar person={person} size={26} />
-                      </View>
-                    ))}
-                  </View>
-                  <CaretRightIcon size={16} color={colors.inkFaint} />
-                </Pressable>
-                </SwipeToDelete>
-              );
-            })
+            conversations.map((conversation) => (
+              <ConversationRow
+                key={conversation._id}
+                conversation={conversation}
+                live={conversation._id === liveConversationId}
+                onOpen={openConversation}
+                onDelete={confirmDelete}
+              />
+            ))
           )}
         </View>
       </ScrollView>
     </View>
   );
 }
+
+const Citation = memo(function Citation({
+  personId,
+  text,
+  kind,
+  onOpenPerson,
+}: {
+  personId?: string;
+  text: string;
+  kind: string;
+  onOpenPerson(personId: string): void;
+}) {
+  const person = usePerson(personId);
+  return (
+    <Pressable style={styles.citation} onPress={() => person && onOpenPerson(person._id)}>
+      <Avatar person={person} size={26} />
+      <View style={styles.citationCopy}>
+        <AppText variant="body">{text}</AppText>
+        <AppText variant="caption">{person ? displayName(person) : 'Unattributed'} · {kind}</AppText>
+      </View>
+    </Pressable>
+  );
+});
+
+/**
+ * Memoized and subscribed to its own participants, so a turn arriving in one
+ * conversation does not repaint every other row in the list.
+ */
+const ConversationRow = memo(function ConversationRow({
+  conversation,
+  live,
+  onOpen,
+  onDelete,
+}: {
+  conversation: Conversation;
+  live: boolean;
+  onOpen(conversationId: string): void;
+  onDelete(conversationId: string, title: string): void;
+}) {
+  const participantIds = conversation.participant_ids;
+  const participants = useSelector(
+    useCallback(
+      (state) => participantIds.map((id) => state.people[id]).filter(Boolean),
+      [participantIds],
+    ),
+    (a, b) => a.length === b.length && a.every((person, index) => person === b[index]),
+  );
+  const title = conversation.title ?? 'Untitled conversation';
+
+  return (
+    <SwipeToDelete onDelete={() => onDelete(conversation._id, title)}>
+      <Pressable
+        onPress={() => onOpen(conversation._id)}
+        style={({ pressed }) => [styles.conversationRow, pressed && styles.dimmed]}
+      >
+        {/* Copy first, avatars after. A leading avatar stack is as wide as the
+            conversation has participants, so every title started at a different x. */}
+        <View style={styles.conversationCopy}>
+          <View style={styles.conversationTitleRow}>
+            <AppText variant="bodyStrong" numberOfLines={1} style={styles.flexible}>{title}</AppText>
+            {live ? <Chip label="Live" tone="live" /> : null}
+          </View>
+          <AppText variant="caption" numberOfLines={1}>
+            {formatDay(conversation.started_at)}
+            {conversation.ended_at ? ` · ${formatDuration(conversation.started_at, conversation.ended_at)}` : ''}
+            {participants.length > 0 ? ` · ${participants.map((person) => displayName(person)).join(', ')}` : ''}
+          </AppText>
+        </View>
+        <View style={styles.conversationAvatars}>
+          {participants.slice(0, 3).map((person, index) => (
+            <View key={person._id} style={[styles.stackedAvatar, index > 0 && styles.stackedAvatarOverlap]}>
+              <Avatar person={person} size={26} />
+            </View>
+          ))}
+        </View>
+        <CaretRightIcon size={16} color={colors.inkFaint} />
+      </Pressable>
+    </SwipeToDelete>
+  );
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1 },

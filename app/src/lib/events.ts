@@ -1,6 +1,9 @@
 import EventSource from 'react-native-sse';
 import type { AmeliaEvent, BusEventName } from '../../../shared/contracts';
-import { API_BASE_URL, FORCE_MOCK, HEALTH_TIMEOUT_MS, MOCK_ENABLED } from './config';
+import { FORCE_MOCK, HEALTH_TIMEOUT_MS, MOCK_ENABLED } from './config';
+import { discoverApiBase } from './discover';
+import { getApiBase } from './urls';
+import type { ConnectionSource } from '../state/reducer';
 import { startMockStream, type MockStreamOptions } from './mock-sse';
 
 const EVENT_NAMES: BusEventName[] = [
@@ -14,7 +17,7 @@ const EVENT_NAMES: BusEventName[] = [
   'amelia_audio',
 ];
 
-export type StreamSource = 'connecting' | 'live' | 'mock';
+
 
 export interface StreamHandle {
   stop(): void;
@@ -22,10 +25,14 @@ export interface StreamHandle {
 
 async function serverIsUp(): Promise<boolean> {
   if (FORCE_MOCK) return false;
+  // Pick whichever candidate address answers before deciding the server is
+  // down: on a network that isolates clients, the address that worked
+  // yesterday hangs today, and that is indistinguishable from an empty account.
+  await discoverApiBase();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HEALTH_TIMEOUT_MS);
   try {
-    const response = await fetch(`${API_BASE_URL}/health`, { signal: controller.signal });
+    const response = await fetch(`${getApiBase()}/health`, { signal: controller.signal });
     return response.ok;
   } catch {
     return false;
@@ -51,7 +58,7 @@ const RETRY_INTERVAL_MS = 5_000;
 
 export function subscribeToEvents(
   onEvent: (event: AmeliaEvent) => void,
-  onSource: (source: StreamSource) => void,
+  onSource: (source: ConnectionSource) => void,
   mockOptions?: MockStreamOptions,
 ): StreamHandle {
   let stopped = false;
@@ -82,6 +89,10 @@ export function subscribeToEvents(
     if (MOCK_ENABLED && !mock) {
       onSource('mock');
       mock = startMockStream(onEvent, mockOptions);
+    } else if (!MOCK_ENABLED) {
+      // Say it plainly. A silent fallback to nothing is indistinguishable from an
+      // account with no conversations in it.
+      onSource('offline');
     }
     scheduleRetry();
   };
@@ -103,7 +114,7 @@ export function subscribeToEvents(
       return;
     }
 
-    source = new EventSource<BusEventName>(`${API_BASE_URL}/events`, {
+    source = new EventSource<BusEventName>(`${getApiBase()}/events`, {
       headers: { Accept: 'text/event-stream' },
     });
     source.addEventListener('open', () => {
