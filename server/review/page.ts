@@ -316,6 +316,20 @@ const REVIEW_PAGE_TEMPLATE = String.raw`<!doctype html>
     <input type="text" id="newName" placeholder="Their name" style="width:170px">
     <button id="setNew">That is who said it</button>
   </div>
+  <div class="panelrow">
+    <span class="label"></span>
+    <!--
+      Naming the VOICE, not the line, and it is the more valuable of the two by
+      a wide margin: this line's voice speaks hundreds of lines, so naming it
+      settles all of them at once where a line correction settles one. The
+      capability already existed on the roster chips at the top of the page,
+      which is nowhere near where he is working — he asked for exactly this
+      while looking at the picker. Same endpoint, put where the question occurs.
+    -->
+    <span class="faint" id="nameVoiceLead"></span>
+    <input type="text" id="voiceName" placeholder="Their name" style="width:170px">
+    <button id="setVoiceName">Name this voice everywhere</button>
+  </div>
   <div class="panelrow" id="saidRow" style="align-items:flex-start">
     <span class="label">Said</span>
     <span style="flex:1"><textarea id="text" rows="2"></textarea></span>
@@ -593,6 +607,12 @@ function voiceDetail(person) {
 function renderSpeakerButtons() {
   const line = lines[index];
   const currentId = shownSpeakerId(line);
+  const onVoice = people.find((person) => person.id === currentId);
+  $('nameVoiceLead').textContent = onVoice
+    ? 'This line is on ' + voiceLabel(onVoice) + ' — ' + (onVoice.lines || 0) + ' lines here. Who is that?'
+    : '';
+  $('voiceName').disabled = !onVoice;
+  $('setVoiceName').disabled = !onVoice;
   $('speakers').innerHTML = people
     .map((person, n) =>
       '<button class="spk' + (currentId && person.id === currentId ? ' cur' : '') + '" data-name="' + esc(person.name) +
@@ -836,6 +856,22 @@ $('people').addEventListener('click', async (event) => {
   });
   if (response.ok) await loadConversation(convId);
 });
+
+$('setVoiceName').onclick = async () => {
+  const line = lines[index];
+  const personId = line && shownSpeakerId(line);
+  const person = people.find((candidate) => candidate.id === personId);
+  const next = $('voiceName').value.trim();
+  if (!person || !next || next === person.name) return;
+  const response = await fetch('/review/api/person-rename', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ recording: convId, person_id: person.id, from_name: person.name, to_name: next }),
+  });
+  if (!response.ok) { status('could not name that voice: ' + response.status, true); return; }
+  $('voiceName').value = '';
+  await loadConversation(convId);
+  select(index);
+};
 
 $('playTight').onclick = () => play(0);
 $('playPad').onclick = () => play(Number($('pad').value));

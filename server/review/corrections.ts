@@ -524,8 +524,16 @@ export function validateSplit(parts: SplitPart[]): string | null {
     if (parts[i].start_ms < parts[i - 1].end_ms) return 'parts must not overlap';
     const before = parts[i - 1].speaker;
     const after = parts[i].speaker;
-    const sameName = normaliseName(before.name) === normaliseName(after.name);
     const samePerson = before.person_id !== null && before.person_id === after.person_id;
+    // Names only settle this when there is no id to settle it with. Most voices
+    // in a real conversation are unnamed and share one placeholder, so two
+    // genuinely different people both read as "Unnamed voice" — which rejected
+    // the owner's split of a line between Voice 1 and Voice 2 as a cut claiming
+    // a change that did not happen. Distinct ids are distinct people whatever
+    // they are called; the name test is the fallback for free-text speakers,
+    // where an id is all that is missing.
+    const bothIdentified = before.person_id !== null && after.person_id !== null;
+    const sameName = !bothIdentified && normaliseName(before.name) === normaliseName(after.name);
     if (sameName || samePerson) {
       return `parts ${i} and ${i + 1} are both ${after.name}, so the cut between them claims a speaker change that did not happen. `
         + 'Give them different speakers, or remove that cut.';

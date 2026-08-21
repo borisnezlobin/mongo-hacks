@@ -319,3 +319,35 @@ describe('a skip is information, not a ruling', () => {
     expect([...skippedLines(file([skip({ recording: 'dorm-9pm' })]), 'dorm-40min').keys()]).toEqual([]);
   });
 });
+
+describe('splitting between two unnamed voices', () => {
+  const part = (start: number, end: number, id: string | null, name: string) => ({
+    start_ms: start, end_ms: end, text: 'x',
+    speaker: { person_id: id, name },
+  });
+
+  it('accepts a cut between two different voices that share the placeholder name', () => {
+    // What the owner actually did: split a line, picked Voice 1 for one half and
+    // Voice 2 for the other. Both are called "Unnamed voice", and the cut was
+    // refused as claiming a speaker change that did not happen.
+    expect(validateSplit([
+      part(0, 1000, 'p-1', 'Unnamed voice'),
+      part(1000, 2000, 'p-2', 'Unnamed voice'),
+    ])).toBeNull();
+  });
+
+  it('still refuses a cut with the same voice on both sides', () => {
+    expect(validateSplit([
+      part(0, 1000, 'p-1', 'Unnamed voice'),
+      part(1000, 2000, 'p-1', 'Unnamed voice'),
+    ])).toContain('did not happen');
+  });
+
+  it('still refuses two free-text speakers of the same name', () => {
+    // No ids to distinguish them, so the name is all there is.
+    expect(validateSplit([
+      part(0, 1000, null, 'Tarun'),
+      part(1000, 2000, null, 'tarun'),
+    ])).toContain('did not happen');
+  });
+});
