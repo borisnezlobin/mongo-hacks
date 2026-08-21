@@ -301,8 +301,20 @@ const REVIEW_PAGE_TEMPLATE = String.raw`<!doctype html>
   <div class="panelrow">
     <span class="label">Who</span>
     <span id="speakers" style="display:flex;gap:6px;flex-wrap:wrap"></span>
-    <input type="text" id="newName" placeholder="Someone else&hellip;" style="width:170px">
-    <button id="setNew">Name them</button>
+  </div>
+  <div class="panelrow">
+    <span class="label"></span>
+    <!--
+      The names worth correcting are the ones no list can offer. The
+      transcriber mangles them — Volva as "Vova", Dhruv as "Drew", Tarun as
+      "Rune" — so the right answer is routinely a person who does not appear
+      above. This read "Someone else… / Name them", which the owner did not
+      connect to what he wanted; he had a line he knew was Tarun and told us he
+      did not know how to say so.
+    -->
+    <span class="faint">Not one of these? Type who really said it&nbsp;&rarr;</span>
+    <input type="text" id="newName" placeholder="Their name" style="width:170px">
+    <button id="setNew">That is who said it</button>
   </div>
   <div class="panelrow" id="saidRow" style="align-items:flex-start">
     <span class="label">Said</span>
@@ -453,6 +465,19 @@ function shownSpeaker(line) {
   if (line.split) return line.split.parts.length + ' speakers';
   return line.ruling && line.ruling.speaker ? line.ruling.speaker.name : personName(line.person_id);
 }
+/**
+ * Which voice this line currently sits on, by id.
+ *
+ * Names cannot do this job: most voices in a real conversation are unnamed and
+ * share the placeholder, so comparing names lit up every unnamed chip at once —
+ * six of eight showing as selected, which reads as nonsense and hides the one
+ * that is actually current.
+ */
+function shownSpeakerId(line) {
+  if (line.split) return null;
+  if (line.ruling && line.ruling.speaker) return line.ruling.speaker.person_id ?? null;
+  return line.person_id ?? null;
+}
 function shownText(line) { return line.ruling && line.ruling.text !== null && line.ruling.text !== undefined ? line.ruling.text : line.text; }
 
 function renderRow(line, i) {
@@ -567,10 +592,10 @@ function voiceDetail(person) {
 
 function renderSpeakerButtons() {
   const line = lines[index];
-  const current = shownSpeaker(line);
+  const currentId = shownSpeakerId(line);
   $('speakers').innerHTML = people
     .map((person, n) =>
-      '<button class="spk' + (person.name === current ? ' cur' : '') + '" data-name="' + esc(person.name) +
+      '<button class="spk' + (currentId && person.id === currentId ? ' cur' : '') + '" data-name="' + esc(person.name) +
       '" data-pid="' + esc(person.id) + '" title="' + esc(person.sample || '') + '">' +
       (n < 9 ? '<kbd style="margin-right:5px">' + (n + 1) + '</kbd>' : '') +
       esc(voiceLabel(person)) + '<small style="opacity:.65;margin-left:6px">' + esc(voiceDetail(person)) + '</small>' +
