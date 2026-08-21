@@ -159,7 +159,10 @@ describe('skipping records that he looked and could not answer', () => {
   });
 
   it('keeps a skipped line off the phone once it is recorded', () => {
-    expect(REVIEW_PAGE_HTML).toContain('!line.skipped_at');
+    // The check lives in needsSpeaker, which is what nextCard asks.
+    const guard = REVIEW_PAGE_HTML.slice(REVIEW_PAGE_HTML.indexOf('function needsSpeaker(line)'));
+    expect(guard.slice(0, 220)).toContain('line.skipped_at');
+    expect(REVIEW_PAGE_HTML).toContain('if (needsSpeaker(line)');
   });
 
   it('makes them findable on a desktop instead of losing them', () => {
@@ -208,5 +211,67 @@ describe('skipping is acknowledged without interrupting', () => {
     const handler = REVIEW_PAGE_HTML.slice(REVIEW_PAGE_HTML.indexOf("closest('[data-skip]')"));
     expect(handler.slice(0, 1200)).toContain('skipped.delete(line.id)');
     expect(handler.slice(0, 1200)).toContain('come round again');
+  });
+});
+
+describe('he can see the shape of the work, once', () => {
+  it('shows what is waiting before the first decision', () => {
+    expect(REVIEW_PAGE_HTML).toContain('Here is what is waiting');
+    expect(REVIEW_PAGE_HTML).toContain("data-start=");
+  });
+
+  it('counts the two kinds of work separately and says what each is worth', () => {
+    expect(REVIEW_PAGE_HTML).toMatch(/voice question/);
+    expect(REVIEW_PAGE_HTML).toMatch(/settles minutes of speech at once/);
+    expect(REVIEW_PAGE_HTML).toMatch(/Worth about a line each/);
+  });
+
+  it('says the queue is not a debt', () => {
+    expect(REVIEW_PAGE_HTML).toMatch(/not expected to reach the end/);
+  });
+
+  it('shows it once and never turns the session into a progress bar', () => {
+    // A count on every card is a thing he feels he owes us. It is gated on a
+    // session flag that is set the moment he starts and never cleared.
+    expect(REVIEW_PAGE_HTML).toContain('if (!started)');
+    expect(REVIEW_PAGE_HTML).toContain('started = true;');
+  });
+});
+
+describe('he can fix what he finds, without the card losing its emptiness', () => {
+  it('hides the tools behind one quiet affordance', () => {
+    expect(REVIEW_PAGE_HTML).toContain('Something else is wrong');
+    expect(REVIEW_PAGE_HTML).toContain("cardMode = 'fixing'");
+  });
+
+  it('offers the two things a thumb can honestly do', () => {
+    expect(REVIEW_PAGE_HTML).toContain('data-savewords=');
+    expect(REVIEW_PAGE_HTML).toContain('data-savename=');
+  });
+
+  it('lets him name a voice that is in no list', () => {
+    // The transcriber mangles names, so the right answer often cannot be
+    // picked: Volva as "Vova", Dhruv as "Drew", Tarun as "Rune".
+    const handler = REVIEW_PAGE_HTML.slice(REVIEW_PAGE_HTML.indexOf('data-savename]'));
+    expect(handler.slice(0, 800)).toContain('person_id: null');
+  });
+
+  it('does not offer a splitter on a phone, and says why', () => {
+    // Word-level cut points on a 390px column are ~15px targets that wrap
+    // across lines. A mis-tap records a speaker change at the wrong moment and
+    // that becomes ground truth.
+    expect(REVIEW_PAGE_HTML).toMatch(/Splitting is deliberately absent/);
+    expect(REVIEW_PAGE_HTML).toContain('More than one person speaks here');
+  });
+
+  it('files a line that needs splitting with the reason attached', () => {
+    expect(REVIEW_PAGE_HTML).toContain("reason: 'more than one person speaks in this line'");
+  });
+
+  it('keeps asking who spoke even after the words are fixed', () => {
+    // Fixing the words gives the line a ruling; testing for any ruling made the
+    // card skip past it as answered, losing the attribution entirely.
+    expect(REVIEW_PAGE_HTML).toContain('function needsSpeaker(line)');
+    expect(REVIEW_PAGE_HTML).toMatch(/asserted\.indexOf\('speaker'\)/);
   });
 });

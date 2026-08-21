@@ -173,7 +173,8 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
         anchor_warning: flaggedLines.get(utterance._id) ?? null,
         // He looked at this and needed more than the card offered. Not a
         // ruling, not untouched: a line worth someone's attention on a desktop.
-        skipped_at: skips.get(utterance._id) ?? null,
+        skipped_at: skips.get(utterance._id)?.at ?? null,
+        skipped_because: skips.get(utterance._id)?.reason ?? null,
       };
     });
 
@@ -607,6 +608,8 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
       at_ms: number;
       end_ms: number;
       original_text?: string;
+      /** What he could not do here, when he said so. Never demanded. */
+      reason?: string;
     }>();
     if (!body.utterance_id) return context.json({ error: 'which line?' }, 400);
 
@@ -621,6 +624,10 @@ export function registerReviewRoutes(app: Hono, _deps: ServerDependencies): void
       original_speaker_id: null,
       original_speaker_name: null,
       asserts: [],
+      // A reason turns "he could not answer this" into "he could not answer
+      // this BECAUSE two people speak in it", which is the difference between a
+      // pile to re-read and a list somebody can act on.
+      ...(body.reason ? { note: body.reason } : {}),
       created_at: new Date().toISOString(),
     };
     await mutateCorrections((current) => ({

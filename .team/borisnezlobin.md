@@ -461,3 +461,31 @@ provenance discipline as a claim.** This one looked confirmed, came from the
 owner, and was an ambiguous answer to an ambiguous question. Before treating a
 result as overturned, check that the question the owner answered is the question
 that was asked — one recording named explicitly, one claim at a time.
+- **The phone card now opens with what is waiting**, once: how many voice
+  questions, how many lines, and what each is worth, with a Start button and
+  "you are not expected to reach the end". Gated on a session flag so it never
+  becomes a counter on every card. He asked to know whether he was facing three
+  things or three hundred, which the single-card design had made unknowable.
+- **"Something else is wrong"** opens the tools in place: fix the words, or name
+  a voice that is in no list (`person_id: null`, which the store already takes —
+  and which matters because the transcriber mangles names, and because a brand
+  new recording has a roster of exactly one). **Splitting is deliberately not
+  offered on a phone**: word-level cut points on a 390px column are ~15px
+  targets that wrap across lines, and a mis-tap does not fail loudly, it records
+  a speaker change at the wrong moment. "More than one person speaks here" files
+  it for a laptop with that reason attached instead.
+- Skips carry a `reason` now, shown on the desktop in the row badge tooltip and
+  in the status line when the row is selected.
+- **Bug worth knowing**: the phone card used `!line.ruling` to mean "unanswered",
+  so fixing the words gave the line a ruling and the card skipped past it as
+  though it had been attributed. It asks "who said this", so the test is
+  `needsSpeaker()` — whether the SPEAKER is asserted, not whether anything is.
+- `gbo-haas` arrives with no diarization, no landmarks, no reference and no
+  questions, and the page handles it: questions [], landmarks 0, freshness
+  `unknown`, queue falls back to speaker deficit and timeline spread. Note its
+  whisper output has **no `segments`**, only words, so nothing has punctuation
+  and the splitter offers no sentence suggestions on it.
+- There is now a test asserting the page template contains no stray backticks.
+  It has cost three debugging detours; `tsc` catches it but points at the wrong
+  line. Also note `grep -c` counts matching LINES, not occurrences — that is why
+  the earlier backtick checks looked clean when they were not.

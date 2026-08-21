@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { durationHelpersSource, msToClock, secondsToClock } from './format';
 import { REVIEW_PAGE_HTML } from './page';
@@ -59,5 +60,23 @@ describe('the page uses those helpers and declares nothing twice', () => {
 
   it('has no leftover call to the ambiguous helper', () => {
     expect(/[^a-zA-Z]clock\(/.test(REVIEW_PAGE_HTML)).toBe(false);
+  });
+});
+
+describe('the page template survives editing', () => {
+  it('has no backtick inside the template body', async () => {
+    // page.ts is one String.raw template, so a backtick anywhere inside it —
+    // most often quoting an identifier in a comment — silently terminates the
+    // template. tsc catches it but points at the wrong line, and it has cost
+    // three separate debugging detours. Fail here instead, with a reason.
+    // Backticks in the file header, before the template opens, are harmless.
+    const source = await readFile('server/review/page.ts', 'utf8');
+    const opens = source.indexOf('String.raw`') + 'String.raw`'.length;
+    const closes = source.lastIndexOf('`');
+    expect(opens).toBeGreaterThan(0);
+    expect(closes).toBeGreaterThan(opens);
+    const body = source.slice(opens, closes);
+    const strays = [...body.matchAll(/`/g)].map((match) => body.slice(Math.max(0, match.index - 50), match.index + 20));
+    expect(strays, 'a backtick inside the template ends it early').toEqual([]);
   });
 });
