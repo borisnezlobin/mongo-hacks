@@ -609,20 +609,26 @@ export function liveIdentityAnswers(file: CorrectionsFile): Map<string, Identity
 }
 
 
-/** Lines he looked at and could not answer, most recent first. */
-export function skippedLines(file: CorrectionsFile, recording: string): Map<string, string> {
-  const skipped = new Map<string, string>();
+export interface SkippedLine {
+  at: string;
+  /** What he said was wrong with it, when he said anything. */
+  reason: string | null;
+}
+
+/** Lines he looked at and could not answer, with why when he told us. */
+export function skippedLines(file: CorrectionsFile, recording: string): Map<string, SkippedLine> {
+  const skipped = new Map<string, SkippedLine>();
   for (const record of file.corrections) {
     if (record.kind !== 'skip' || record.recording !== recording) continue;
-    skipped.set(record.utterance_id, record.created_at);
+    skipped.set(record.utterance_id, { at: record.created_at, reason: record.note ?? null });
   }
   // A later ruling means he came back and dealt with it; the skip stops being
   // interesting the moment it is answered.
   for (const record of file.corrections) {
     if (record.kind === 'skip' || record.kind === 'retraction') continue;
     if (record.recording !== recording) continue;
-    const at = skipped.get(record.utterance_id);
-    if (at && record.created_at > at) skipped.delete(record.utterance_id);
+    const entry = skipped.get(record.utterance_id);
+    if (entry && record.created_at > entry.at) skipped.delete(record.utterance_id);
   }
   return skipped;
 }

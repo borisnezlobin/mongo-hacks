@@ -242,9 +242,14 @@ const REVIEW_PAGE_TEMPLATE = String.raw`<!doctype html>
     /* The way out sits at the bottom, away from the decision, always reachable. */
     .out { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
     .out .big { min-height: 46px; font-size: 14px; color: var(--ink-soft); }
+    .out .big.primary { color: #fff; font-size: 16px; min-height: 54px; }
     .quiet { background: none; box-shadow: none; text-decoration: underline; font-size: 13px; padding: 6px; }
     .suggested { box-shadow: inset 0 0 0 2px var(--accent); }
     .cardnote { font-size: 13px; color: var(--ink-faint); margin: 0; }
+    .cardlist { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 10px; }
+    .cardlist li { font-size: 15px; line-height: 1.45; color: var(--ink-soft); }
+    .cardlist b { color: var(--ink); }
+    #card textarea, #card input[type=text] { width: 100%; font-size: 16px; padding: 10px 12px; border-radius: 10px; }
     .cardwarn { font-size: 13px; color: var(--alarm); background: var(--alarm-soft); border-radius: 8px; padding: 9px 11px; }
   }
 
@@ -480,7 +485,9 @@ function paintRow(row, line, i) {
   if (asserted.indexOf('text') >= 0) marks.push('<span class="mark ' + (textChanged ? 'ed' : 'ok') + '">words</span>');
   if (parts) marks.push('<span class="mark sp">' + parts.length + ' parts</span>');
   if (!parts && !ruling && line.retracted) marks.push('<span class="mark rt">undone</span>');
-  if (!parts && !ruling && line.skipped_at) marks.push('<span class="mark sk">needed more</span>');
+  if (!parts && !ruling && line.skipped_at) {
+    marks.push('<span class="mark sk" title="' + esc(line.skipped_because || 'he could not answer this from the card') + '">needed more</span>');
+  }
 
   row.innerHTML =
     '<div class="t">' + stamp(line.at_ms) + '</div>' +
@@ -524,15 +531,21 @@ function select(i, options) {
   renderSpeakerButtons();
   const reason = reasonById.get(line.id);
   const note = options && options.note ? options.note + ' ' : '';
+  const skippedNote = line.skipped_at
+    ? 'He looked at this on his phone and could not answer it'
+      + (line.skipped_because ? ': ' + line.skipped_because : '')
+    : '';
   status(
     line.anchor_warning
       ? note + line.anchor_warning
-      : note + (mode === 'queue' && reason ? 'Next: ' + reason : ''),
+      : note + (skippedNote || (mode === 'queue' && reason ? 'Next: ' + reason : '')),
     Boolean(line.anchor_warning),
   );
   playingKey = null;
   prefetch(Number($('pad').value));
-  if ($('autoplay').checked && !(options && options.silent)) play(0, Boolean(options && options.note));
+  if ($('autoplay').checked && !(options && options.silent)) {
+    play(0, Boolean((options && options.note) || skippedNote));
+  }
 }
 
 // Six of the eight voices in this recording are literally called "Unnamed
@@ -774,8 +787,11 @@ async function loadConversation(id) {
 $('rows').addEventListener('click', (event) => {
   const row = event.target.closest('.row');
   if (!row) return;
-  select(Number(row.dataset.i), { noScroll: true });
-  play(0);
+  const at = Number(row.dataset.i);
+  select(at, { noScroll: true });
+  // Quiet when the line carries an explanation, so "he could not answer this"
+  // is not replaced by "playing the line" a moment later.
+  play(0, Boolean(lines[at] && lines[at].skipped_at));
 });
 
 $('speakers').addEventListener('click', (event) => {
@@ -828,8 +844,36 @@ let lastCard = null;
  * that was not saved is worse than no receipt.
  */
 let receipt = null;
+/** Shown once, before the first decision, and never again in this session. */
+let started = false;
+/** The card's own state: the decision, or the tools he asked for. */
+let cardMode = 'normal';
+
+/**
+ * Does this line still need the question the card asks?
+ *
+ * The card asks "who said this", so a line is unanswered until somebody has
+ * said who. Testing for any ruling at all was wrong: fixing the words gives the
+ * line a ruling, and the card then skipped past it as though it had been
+ * answered — so correcting a garbled line silently lost the chance to
+ * attribute it.
+ */
+function needsSpeaker(line) {
+  if (line.split || line.skipped_at) return false;
+  return !(line.ruling && line.ruling.asserted.indexOf('speaker') >= 0);
+}
 
 function nextCard() {
+  // What is waiting, once, before he starts. He asked to know whether he is
+  // facing three things or three hundred, and the single-card design had made
+  // that unknowable. It is shown before the first decision and never again:
+  // a count on every card would turn the session into a progress bar he feels
+  // he owes us, and he does not — three answers already moved the needle.
+  if (!started) {
+    const openQuestions = questions.filter((candidate) => !candidate.answer).length;
+    const waiting = lines.filter(needsSpeaker).length;
+    if (openQuestions > 0 || waiting > 0) return { kind: 'start', questions: openQuestions, waiting: waiting };
+  }
   const question = questions.find((candidate) => !candidate.answer && !skipped.has(candidate.id));
   if (question) return { kind: 'question', question: question };
   for (const at of orderedIndices()) {
@@ -837,7 +881,7 @@ function nextCard() {
     // A skip recorded in an earlier session must not come back at him here. It
     // is answerable on a desktop, where the words can be fixed and a line can
     // be split.
-    if (!line.ruling && !line.split && !line.skipped_at && !skipped.has(line.id)) return { kind: 'line', at: at };
+    if (needsSpeaker(line) && !skipped.has(line.id)) return { kind: 'line', at: at };
   }
   return { kind: 'done' };
 }
@@ -854,6 +898,26 @@ function showCard() {
   const undo = lastCard ? '<button class="quiet" data-undo="1">Change my last answer</button>' : '';
   const note = receipt ? '<p class="cardnote">' + esc(receipt) + '</p>' : '';
   receipt = null;
+
+  if (card.kind === 'start') {
+    const bits = [];
+    if (card.questions > 0) {
+      bits.push('<li><b>' + card.questions + ' voice question' + (card.questions === 1 ? '' : 's') +
+        '</b> — two clips and a yes or no. These are worth the most: each one settles minutes of speech at once.</li>');
+    }
+    if (card.waiting > 0) {
+      bits.push('<li><b>' + card.waiting + ' line' + (card.waiting === 1 ? '' : 's') +
+        '</b> — hear it, then say who spoke. Worth about a line each, and they are ordered so the most useful come first.</li>');
+    }
+    $('card').innerHTML = note +
+      cardStale() +
+      '<h2 class="cardq">Here is what is waiting</h2>' +
+      '<ul class="cardlist">' + bits.join('') + '</ul>' +
+      '<p class="cardnote">Stop whenever you like — everything is saved as you go, and you are not expected to reach the end.</p>' +
+      '<div class="out"><button class="big primary" data-start="1">Start</button></div>';
+    $('card').dataset.kind = 'start';
+    return;
+  }
 
   if (card.kind === 'done') {
     $('card').innerHTML = note +
@@ -898,16 +962,46 @@ function showCard() {
         '<button class="big' + (person.id === line.person_id ? ' suggested' : '') + '" data-voice="' + esc(person.id) + '">' +
         esc(voiceLabel(person)) + '</button>').join('') +
     '</div>' +
-    '<div class="out"><button class="big" data-skip="1">Skip this one</button>' + undo + '</div>';
+    '<div class="out">' +
+      '<button class="quiet" data-fix="1">Something else is wrong</button>' +
+      '<button class="big" data-skip="1">Skip this one</button>' + undo +
+    '</div>';
+  if (cardMode === 'fixing') {
+    // Progressive disclosure: the tools exist, but only once he says something
+    // is wrong. The default card keeps its emptiness.
+    //
+    // Splitting is deliberately absent. It needs word-level cut points, and on
+    // a 390px column the gaps between words are ~15px targets that wrap across
+    // lines; a mis-tap does not fail loudly, it records a speaker change at the
+    // wrong moment and that becomes ground truth. Filing it for a laptop, which
+    // is what the last button does, is the honest version.
+    $('card').innerHTML =
+      '<h2 class="cardq">What is wrong with it?</h2>' +
+      '<div class="cardsay">' + esc(shownText(line)) + '</div>' +
+      '<label class="cardnote" for="fixText">The words are wrong</label>' +
+      '<textarea id="fixText" rows="3">' + esc(shownText(line)) + '</textarea>' +
+      '<button class="big" data-savewords="1">Save the words</button>' +
+      '<label class="cardnote" for="fixName">It was someone not in the list</label>' +
+      '<input type="text" id="fixName" placeholder="Their name" autocapitalize="words">' +
+      '<button class="big" data-savename="1">Save that name</button>' +
+      '<div class="out">' +
+        '<button class="big" data-needsplit="1">More than one person speaks here</button>' +
+        '<button class="quiet" data-back="1">Back</button>' +
+      '</div>';
+    $('card').dataset.kind = 'line';
+    $('card').dataset.at = String(card.at);
+    return;
+  }
+
   $('card').dataset.kind = 'line';
   $('card').dataset.at = String(card.at);
 
   // If the browser refuses to autoplay — iOS wants a gesture per element — the
   // card would otherwise sit there looking like it should be making a sound.
   // Better to say so and make the one useful button obviously the thing to tap.
-  const started = play(0, true);
-  if (started && started.then) {
-    started.then((ok) => {
+  const playing = play(0, true);
+  if (playing && playing.then) {
+    playing.then((ok) => {
       if (ok !== false || $('card').dataset.at !== String(card.at)) return;
       const replay = $('card').querySelector('[data-replay]');
       if (!replay) return;
@@ -921,6 +1015,9 @@ $('card').addEventListener('click', async (event) => {
   const kind = $('card').dataset.kind;
 
   if (event.target.closest('[data-again]')) { skipped = new Set(); showCard(); return; }
+  if (event.target.closest('[data-start]')) { started = true; showCard(); return; }
+  if (event.target.closest('[data-fix]')) { cardMode = 'fixing'; showCard(); return; }
+  if (event.target.closest('[data-back]')) { cardMode = 'normal'; showCard(); return; }
 
   if (event.target.closest('[data-undo]')) {
     const previous = lastCard;
@@ -953,6 +1050,59 @@ $('card').addEventListener('click', async (event) => {
     await answerQuestion(question, answer.dataset.a);
     lastCard = { kind: 'question', id: question.id };
     showCard();
+    return;
+  }
+
+  if (kind === 'line' && cardMode === 'fixing') {
+    const at = Number($('card').dataset.at);
+    const line = lines[at];
+    index = at;
+
+    if (event.target.closest('[data-savewords]')) {
+      const ok = await postCorrection({ asserts: ['text'], text: $('fixText').value });
+      if (!ok) return;
+      // Fixing the words does not say who spoke, so he comes back to the
+      // question he was on rather than being moved along.
+      cardMode = 'normal';
+      receipt = 'Words saved.';
+      showCard();
+      return;
+    }
+
+    if (event.target.closest('[data-savename]')) {
+      const name = ($('fixName').value || '').trim();
+      if (!name) { $('fixName').focus(); return; }
+      // The transcriber mangles names — Volva as "Vova", Dhruv as "Drew",
+      // Tarun as "Rune" — so the right answer is often one no list can offer.
+      // A null person_id means "somebody new", which the store already accepts.
+      const ok = await postCorrection({ asserts: ['speaker'], speaker: { person_id: null, name: name } });
+      if (!ok) return;
+      lastCard = { kind: 'line', id: line.id };
+      cardMode = 'normal';
+      receipt = name + ' saved.';
+      showCard();
+      return;
+    }
+
+    if (event.target.closest('[data-needsplit]')) {
+      cardMode = 'normal';
+      skipped.add(line.id);
+      lastCard = null;
+      const saved = await fetch('/review/api/skip', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recording: convId, utterance_id: line.id, at_ms: line.at_ms,
+          end_ms: line.end_ms, original_text: line.text,
+          reason: 'more than one person speaks in this line',
+        }),
+      }).then((response) => response.ok).catch(() => false);
+      receipt = saved
+        ? 'Saved for a laptop session — that one needs splitting.'
+        : 'That one could not be saved — it will come round again.';
+      if (!saved) { skipped.delete(line.id); } else { line.skipped_at = new Date().toISOString(); }
+      showCard();
+      return;
+    }
     return;
   }
 
@@ -989,6 +1139,7 @@ $('card').addEventListener('click', async (event) => {
     const ok = await postCorrection({ asserts: ['speaker'], speaker: { person_id: person.id, name: person.name } });
     if (!ok) return;
     lastCard = { kind: 'line', id: line.id };
+    cardMode = 'normal';
     showCard();
   }
 });
