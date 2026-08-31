@@ -99,9 +99,11 @@ export function tokenizeTurns(turns: NamingTurn[]): TokenizedTurn[] {
  */
 function collectNonPersonTokens(tokenized: TokenizedTurn[]): Set<string> {
   const nonPerson = new Set<string>();
+  const selfNamed = selfNamedTokens(tokenized);
   for (const { tokens } of tokenized) {
     tokens.forEach((token, index) => {
       if (GIVEN_NAMES.has(token.key)) return;
+      if (selfNamed.has(token.key)) return;
       const previous = tokens[index - 1];
       const next = tokens[index + 1];
       const precededByThingMarker = previous !== undefined && NON_PERSON_PRECEDERS.has(previous.key);
@@ -112,6 +114,42 @@ function collectNonPersonTokens(tokenized: TokenizedTurn[]): Set<string> {
     });
   }
   return nonPerson;
+}
+
+/**
+ * Words somebody used to introduce themselves, anywhere in the conversation.
+ *
+ * These are exempt from the thing-shaped disqualification above, and the reason
+ * is a failure measured on a 160-minute event recording. `followedByProperNoun`
+ * exists to catch "Luma Links" and "Extended Reality" — two capitalised words in
+ * a row usually are a product or a place. But the other thing that is reliably
+ * two capitalised words in a row is A PERSON'S FULL NAME, and at an event the
+ * host says one before every speaker: "next up, Blockchain at Berkeley, Taj
+ * Sandhu." That single announcement disqualified `taj` for the whole recording,
+ * so when he then said "My name is Taj" the naming pass produced nothing at all.
+ * Same for Alton Sturgeon, who holds twenty minutes of the recording.
+ *
+ * The heuristic had the ordering inverted: a guess made from capitalisation was
+ * vetoing the strongest cue the system has. Somebody saying their own name
+ * outranks it. Note this exempts the word from disqualification only — it grants
+ * no strength, so an unfamiliar name still carries the UNFAMILIAR_NAME_FLOOR
+ * discount and still has to win on its own evidence.
+ *
+ * It applies to names the lexicon does not know, which are disproportionately
+ * not Anglo — the filter was quietly hardest on exactly the people least likely
+ * to be recognised without it.
+ */
+function selfNamedTokens(tokenized: TokenizedTurn[]): Set<string> {
+  const named = new Set<string>();
+  for (const { tokens } of tokenized) {
+    tokens.forEach((token, index) => {
+      // Capitalised and not a participle, so "I'm going" and "I am listening"
+      // do not buy an exemption for a verb the other filters would have caught.
+      if (!token.capitalized || PRESENT_PARTICIPLE.test(token.key)) return;
+      if (matchIntroduction(tokens, index)?.kind === 'self_introduction') named.add(token.key);
+    });
+  }
+  return named;
 }
 
 /**
