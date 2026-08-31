@@ -489,3 +489,200 @@ that was asked — one recording named explicitly, one claim at a time.
   It has cost three debugging detours; `tsc` catches it but points at the wrong
   line. Also note `grep -c` counts matching LINES, not occurrences — that is why
   the earlier backtick checks looked clean when they were not.
+
+## Whisper repetition loops eat real speech (2026-08-25)
+
+Verifying the new eHub-at-Haas recording (`ehub-haas`, 160 min) turned up a
+transcription failure that is not specific to it. **whisper-1's decoder gets
+stuck repeating one line, and the loop stands where speech was.** Eleven runs in
+that recording, 442 s of the transcript, the largest a five-minute stretch the
+full-file pass wrote off as forty-two `🎵` markers. Re-decoding that stretch
+alone returns 441 words of ordinary conversation — a student describing a
+structural-engineering degree in France. It was not music. It is also not new:
+`dorm-40min` has one four-long run at 35:18.
+
+The repair is `server/audio/loop-repair.ts`, wired into `transcribeWithTimings`.
+A run of three or more identical segments is a **suspicion**, not a verdict —
+people really do say the same short thing several times, and a rule that cannot
+tell the two apart is worse than the loop. So the run is decoded again on its
+own, with 15 s of context either side, and whatever that decode says wins. A
+fresh decode has no context to be stuck in, which is exactly why the first one
+looped. Two of the eleven runs reproduced under an isolated decode and were kept
+untouched; nine were replaced. Net +414 words of real text.
+
+**The diarization corroborates it, and it never saw a word of text.** Over
+85:41-90:54, the stretch whisper called music, pyannote finds 269 s of speech in
+313 s with one voice holding 260 of them: a one-on-one conversation. Over
+46:20-46:53, the twenty `I'm sorry.`, it finds **zero** speech and zero voices —
+that was applause, and every one of those lines was invented. 125:38 comes back
+at 145% coverage across five voices, which is crosstalk, and the re-decode reads
+like crosstalk.
+
+**Where the mechanism is weak, measured on the same evidence.** The isolated
+decode is not an oracle. It only catches a loop that is a *decoder* fixed point;
+a loop whose cause is acoustic reproduces on the second decode too and is kept.
+Both kept runs are exactly that — `Thank you.` over applause at 17:23 and 43:23,
+where pyannote finds 19% and **0%** speech. Eleven harmless lines here, but the
+stronger verdict for this case is already in the pipeline: text over a span with
+no diarized speech is not speech. Wiring that into the word join is the next
+lever, and it needs care — pyannote missing speech must not delete it.
+
+Also in this change:
+
+- `transcribeOne` now returns the API payload rather than a `TimedTranscript`,
+  and `transcribeRaw` is exported. Punctuation restoration happens once, at the
+  end, in `readTimedTranscript` — the fixture files are verbose_json bodies and
+  every reader restores punctuation itself, so a script that saved the processed
+  shape would have it restored twice.
+- `eval/real/transcribe.mts` produces `fixtures/real/<stem>.whisper.json` for a
+  recording. Those fixtures used to be made by hand, one curl each, which does
+  not survive a file over the 25 MB upload cap. Chunks and repair decodes are
+  cached under `fixtures/real/chunks/` because each one is a bill.
+
+## Heads up
+
+- `server/audio/whisper-client.ts`: `transcribeOne` is raw now and the final
+  pass makes extra API calls when a recording contains loops (bounded by the
+  number of runs; zero calls when there are none). `repairLoops: false` opts out.
+
+`ehub-haas` is now a complete fixture: `.wav` (+ `.stereo.wav`), `.whisper.json`,
+`.pyannote.json`, `.sentpool.json`. 160 min, 31 voices, 277 s of simultaneous
+speech, 2801 of 3001 sentences attributed. Two numbers worth knowing before
+anyone promises a long recording: **pyannote ran at 0.9x realtime** — 3 h 6 m of
+CPU for 2 h 40 m of audio — and whisper cost about a dollar. The opening keynote
+minute lands 236 of 238 words on one voice, which is the cheap smoke test.
+
+## The other half of the loop problem: nobody was speaking (2026-08-25)
+
+The re-decode above catches a loop that is a fixed point of the *decoder*. It
+structurally cannot catch one whose cause is acoustic — a fresh decode of the
+same applause hears the same thing and the run reproduces, so it is kept. Both
+runs left standing in `ehub-haas` were exactly that.
+
+The diarization settles it and is already computed a moment later in the same
+pass. `dropSilentRepeats` in `loop-repair.ts` removes a repetition run that
+stands over a span where pyannote finds no voice at all; `session.ts` calls it
+after `diarizeAudio` and before the sentence pass, so the join and everything
+downstream never see it.
+
+**Measured over every recording that has both a transcript and a diarization**,
+which is what the 0.20 threshold is chosen from — `npx tsx eval/real/silent-runs.mts`:
+
+| run | coverage | outcome |
+|---|---|---|
+| ehub 17:23 `Thank you.` x6 | 0.00 | dropped |
+| ehub 43:23 `Thank you.` x6 | 0.03 | dropped |
+| jerry 19:42 `David Wu.` x3 | 0.47 | kept |
+| dorm 3:41 `I don't know when it's...` x3 | 0.87 | kept |
+| ehub 17:32 `Thank you.` x3 | 0.91 | kept |
+| dorm 27:59 `Merhaba.` x3 | 1.00 | kept |
+| dorm 35:16 `Mechanical engineering.` x6 | 1.00 | kept |
+
+Nothing sits between 0.03 and 0.47. Across the six recordings it drops 21 words,
+all of them on eHub, and nothing at all on the other five.
+
+**It is deliberately narrow and should stay that way.** Ordinary segments sit at
+1.00 coverage at the median, but 1.3%-17% of them per recording fall under the
+threshold — that is pyannote missing speech, and a rule that deleted those would
+be deleting speech. Only a run that is already suspicious is put to the test.
+
+## Personal data has one guard now
+
+`server/lib/personal-data.ts` holds `assertPathIsGitIgnored`, moved out of
+`review/corrections.ts` — the rule was never about corrections, and the moment a
+second writer existed it needed one home. `assertCorrectionsPathIsIgnored` is
+still there and still mentions `AMELIA_CORRECTIONS_PATH`; it delegates.
+
+This came up because `eval/real/write-transcript.mts` renders a readable
+transcript — every word real people said in a room — and `.gitignore` covered
+`eval/real/*.json` but not `*.txt`. It would have been committed. The rule is
+now `eval/real/*.txt`, and the writer checks `git check-ignore` before writing
+rather than trusting the directory.
+
+`eval/real/<stem>.transcript.txt` runs the whole final pass in `session.ts`'s
+order — whisper payload, diarization, sentence pass, silent-run drop, word join.
+`ehub-haas`: 1027 lines, 31 voices, 22701 of 22726 words attributed.
+
+## The full-name announcement was disqualifying the name (2026-08-25)
+
+Names are the point of Amelia, so this one matters more than the transcript work
+above. On `ehub-haas` the naming pass offered 9 names for 31 voices. Three real
+self-introductions were missed, and two of them for the same structural reason.
+
+`collectNonPersonTokens` disqualifies a word that appears followed by another
+capitalised word — the rule that keeps "Luma Links" and "Extended Reality" out
+of the roster. **The other thing that is reliably two capitalised words in a row
+is a person's full name**, and at an event the host says one before every single
+speaker: "next up, Blockchain at Berkeley, Taj Sandhu." That one announcement
+disqualified `taj` for the entire 160 minutes, so when he said "My name is Taj"
+the pass produced **no mention at all** — not a weak one. Same for Alton
+Sturgeon, who holds 1244 s, the second-largest voice in the recording.
+
+The ordering was inverted: a guess made from capitalisation was vetoing the
+strongest cue the system has. `selfNamedTokens` in `rules.ts` now exempts a word
+somebody used to introduce THEMSELVES from that disqualification. It grants no
+strength — an unfamiliar name still takes `UNFAMILIAR_NAME_FLOOR` and still has
+to win on its own evidence, which is why Alton lands at 0.71 and Taj at 0.77.
+
+Worth saying plainly: the filter only ever applied to names outside
+`GIVEN_NAMES`, which is 1178 mostly-Anglo entries. It was quietly hardest on
+exactly the people least likely to be recognised without it.
+
+Measured across all six recordings, before and after: **the only change anywhere
+is Taj and Alton appearing on `ehub-haas`.** Nothing else moves, and all 90
+naming tests still pass. Four new tests, two of them guards — "Luma Links" must
+still be kept out and "I'm Wizarding my freshman kids" must still not be a name.
+
+### Still missed, and correctly
+
+`Boris` is offered for nobody, and that is the right answer from where the pass
+is standing. Two different voices self-introduce with it — SPEAKER_14 at 44:05
+and SPEAKER_00 at 121:12 — at identical strength 0.78, so it declines rather
+than guess, exactly as designed. Both are almost certainly the owner, split by
+diarization across 160 minutes. **Two voices claiming the same self-introduction
+is good evidence of an over-split and a candidate for merge** — that is an
+identity signal we do not currently use, and it is the obvious next thing here.
+In the product the owner is resolved by voiceprint anyway, so this specific miss
+is an artifact of seeding offline.
+
+Also note SPEAKER_07 spends the last minutes discussing the band Boris, and
+those vocatives are correctly discounted to 0.216 by `organisationTalk`.
+
+### Reviewing ehub-haas
+
+`AMELIA_STORAGE=local npx tsx tools/seed-from-recording.mts ehub-haas`, then
+`AMELIA_STORAGE=local npm run dev --workspace=@amelia/server` and open
+`/review?conversation=ehub-haas`. 1013 lines, audio resolves, clicking a line
+plays that span. The seed script now applies `dropSilentRepeats` too — without
+it the review queue would ask about six "Thank you." over applause.
+
+## A sixth copy of the join, and the warning that caught it (2026-08-25)
+
+Adding `dropSilentRepeats` to `session.ts` and to `seed-from-recording.mts` but
+not to `server/review/freshness.ts` made the review page report a correctly
+seeded store as stale: pipeline 1015 lines, store 1013, the two applause runs.
+The banner was right and the store was right; the check was comparing against a
+pipeline that no longer existed.
+
+`readRealRecording` in `fixtures/real-audio.ts` already existed for exactly this,
+and its own docstring says why — "five suites used to hand-roll this join and
+every copy drifted". I added a sixth. The drop now lives inside that reader, and
+`freshness.ts`, `seed-from-recording.mts`, `write-transcript.mts` and
+`name-evidence.mts` all call it instead of composing the steps themselves.
+Freshness reports `current` again, 1013 = 1013.
+
+Two things worth keeping:
+
+- **The step went in front of the join, not inside it.** Anything that inserts a
+  stage between the fixtures and `joinTranscriptToTurns` has to go in the reader,
+  or the freshness check silently measures the old pipeline. That is the failure
+  mode, not the line count.
+- The drop uses the RAW `<stem>.pyannote.json` as its speech map even when the
+  corrected turns are what gets joined. The corrected turns are a rewrite of the
+  diarization, and asking whether a rewrite covers a span is not the same
+  question as asking whether anybody spoke there.
+
+The sweep and probe scripts in `eval/real/` still call `joinWordsToSpeakers`
+directly and should keep doing so — they vary `minTurnMs`, `snapMs` and the
+candidate diarization on purpose. They are measuring a question, not reporting
+what the product produces.
