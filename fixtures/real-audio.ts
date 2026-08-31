@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { joinTranscriptToTurns, type AttributionRun } from '../server/audio/attribute-recording';
 import type { SpeakerTurn } from '../server/audio/diarize-sidecar';
 import { readTimedTranscript, type WhisperResponse } from '../server/audio/whisper-client';
+import { dropSilentRepeats } from '../server/audio/loop-repair';
 
 /**
  * Access to the real recorded conversation used for calibration.
@@ -105,7 +106,19 @@ export function readRealRecording(stem: string): AttributionRun {
   const [whisper, pyannote] = realRecordingFixtures(stem);
   const transcript = readTimedTranscript(readRealFixture<WhisperResponse>(whisper));
   const turns = readRealFixture<{ turns: SpeakerTurn[] }>(pyannote).turns;
-  return joinTranscriptToTurns(transcript.words, turns, 0, transcript.segments);
+  // `session.ts` drops repetition runs standing over silence between diarization
+  // and the join, so a reader that skips it reports a correctly seeded store as
+  // stale and hands the review queue six "Thank you." over applause to rule on.
+  //
+  // The speech map is the RAW diarization, matching what the session passes.
+  // The corrected turns above are a rewrite of it, and measuring coverage
+  // against a rewrite of itself is not the same question.
+  const raw = `${stem}.pyannote.json`;
+  const speech = hasRealFixture(raw)
+    ? readRealFixture<{ turns: SpeakerTurn[] }>(raw).turns
+    : turns;
+  const cleaned = dropSilentRepeats(transcript, speech);
+  return joinTranscriptToTurns(cleaned.words, turns, 0, cleaned.segments);
 }
 
 export interface RealLine {
