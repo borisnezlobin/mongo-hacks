@@ -1188,3 +1188,56 @@ describe('names outside the ASCII alphabet', () => {
     for (const name of names) expect(name).not.toMatch(/^[\p{L}]{1,2}$/u);
   });
 });
+
+describe('a name the host announced in full before its owner spoke', () => {
+  /** The shape of every speaker slot at an event: announced, then they talk. */
+  const announcedThenIntroduces = (announcement: string, introduction: string) =>
+    suggestNames({
+      conversation_id: 'c',
+      turns: [
+        { id: 'u0', speaker: 'host', text: announcement, start_ms: 0, end_ms: 4_000 },
+        { id: 'u1', speaker: 's1', text: introduction, start_ms: 5_000, end_ms: 9_000 },
+      ],
+    }).suggestions;
+
+  it('offers a name the lexicon does not know, announced as a full name', () => {
+    // Measured on a 160-minute event recording: the host says "next up,
+    // Blockchain at Berkeley, Taj Sandhu", and that one announcement — two
+    // capitalised words in a row, the same shape as "Luma Links" — disqualified
+    // `taj` for the whole conversation. His own "My name is Taj" then produced
+    // NOTHING, not a weak suggestion. Same for Alton Sturgeon, who holds twenty
+    // minutes of that recording.
+    const names = announcedThenIntroduces(
+      'All right, next up, Blockchain at Berkeley, Taj Sandhu.',
+      "My name is Taj, I'm with Blockchain at Berkeley.",
+    ).map((suggestion) => suggestion.name);
+    expect(names).toContain('Taj');
+  })
+
+  it('offers it from "I\'m" as well, which is the weaker of the two frames', () => {
+    const names = announcedThenIntroduces(
+      'Extended Reality at Berkeley, Alton Sturgeon.',
+      "Hi, I'm Alton, and this is Extended Reality at Berkeley.",
+    ).map((suggestion) => suggestion.name)
+    expect(names).toContain('Alton')
+  })
+
+  it('still keeps a product out of the way when nobody claims it', () => {
+    // The exemption is only for a word somebody used for THEMSELVES. Without
+    // that, the thing-shaped disqualification has to still work, or this fix
+    // has traded a missing name for an invented one.
+    const names = announcedThenIntroduces(
+      'You can find us on Luma Links, it is the transit app.',
+      'Luma Links is where we post everything.',
+    ).map((suggestion) => suggestion.name)
+    expect(names).not.toContain('Luma')
+  })
+
+  it('does not let a participle buy its way past the filter', () => {
+    const names = announcedThenIntroduces(
+      'Welcome back, Wizarding World.',
+      "I'm Wizarding my freshman kids through orientation.",
+    ).map((suggestion) => suggestion.name)
+    expect(names).not.toContain('Wizarding')
+  })
+})
