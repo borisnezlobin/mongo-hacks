@@ -9,6 +9,7 @@ import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
 import { registerGlassesRoutes, startGlassesServer } from './glasses';
 import { identityServiceFor, registerIdentityRoutes } from './identity';
+import { bearerAuth } from './lib/auth';
 import { AmeliaBus } from './lib/bus';
 import { createMemoryApi, registerMemoryRoutes } from './memory';
 import { registerNameSuggestions } from './naming/register';
@@ -36,6 +37,7 @@ export function createApp() {
   const deps = { bus, memory };
 
   app.use('*', cors());
+  app.use('*', bearerAuth());
   app.onError((error, context) => {
     // Log the real error, return a generic one. Driver errors carry cluster
     // hostnames and requireEnv errors name secrets; neither belongs in a

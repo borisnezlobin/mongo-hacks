@@ -541,6 +541,21 @@ Also in this change:
 
 ## Heads up
 
+- **Merging main superseded part of Tarun's ambiguity work, and he should know
+  before he builds on it.** `1122dfe` wired `decideSpeaker` from the new
+  `server/identity/score-norm.ts` into `identity/service.ts` and added an
+  ambiguous-retry ladder to `audio/session.ts`, both against the pre-rewrite
+  attribution path. This branch had already replaced that path with
+  `identity/matcher.ts` (session-mean centering, greedy per-session assignment,
+  `ATTRIBUTION_MARGIN` failing closed to `ambiguous`), so the two are the same
+  idea implemented twice and they do not compose. The merge keeps this branch's
+  version of `service.ts`, `session.ts` and their suites; `score-norm.ts`, its
+  test and `eval/score-norm.mts` are untouched and still pass, but **nothing
+  calls `decideSpeaker` any more.** AS-norm is the better answer to the problem
+  the fixed margin only papers over, so the work to do is porting it onto
+  `matcher.ts`, not reverting either side. His margin tests in
+  `identity/service.test.ts` needed a `$vectorSearch` aggregate our fake
+  collection deliberately does not have, and were dropped with that path.
 - `server/audio/whisper-client.ts`: `transcribeOne` is raw now and the final
   pass makes extra API calls when a recording contains loops (bounded by the
   number of runs; zero calls when there are none). `repairLoops: false` opts out.

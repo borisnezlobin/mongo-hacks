@@ -31,12 +31,16 @@ export const resolveFactState: MemoryApi['resolveFactState'] = (personId, attrib
 export const createReminder: MemoryApi['createReminder'] = (promiseId, fireAt) =>
   store.createReminder(promiseId, fireAt);
 export const addNote: MemoryApi['addNote'] = (personId, text) => store.addNote(requireBus(), personId, text);
+export const setFact: MemoryApi['setFact'] = (personId, attribute, claim) =>
+  store.setFact(requireBus(), personId, attribute, claim);
+export const namePerson: MemoryApi['namePerson'] = (personId, name, relationship) =>
+  store.namePerson(personId, name, relationship);
 export { searchMemory };
 
 /** The frozen cross-lane surface. Lane D imports these and nothing else. */
 export function createMemoryApi(deps: { bus: AmeliaBus }): MemoryApi {
   activeBus = deps.bus;
-  return { searchMemory, getPerson, resolveFactState, createReminder, addNote };
+  return { searchMemory, getPerson, resolveFactState, createReminder, addNote, setFact, namePerson };
 }
 
 export function registerMemoryRoutes(app: Hono, deps: ServerDependencies): void {
