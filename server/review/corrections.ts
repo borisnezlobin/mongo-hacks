@@ -29,6 +29,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertPathIsGitIgnored } from '../lib/personal-data';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..', '..');
@@ -208,18 +209,16 @@ export function correctionsPath(): string {
 /**
  * Refuse to write personal data anywhere git would pick it up.
  *
- * `git check-ignore` is the only authority on this that cannot drift from the
- * actual .gitignore. A path outside the repository is fine — git cannot see it.
+ * The rule lives in `server/lib/personal-data.ts` now: it is not a fact about
+ * corrections, and the transcript writer needs the same guarantee. This keeps
+ * the corrections-shaped name and the hint about the env var.
  */
 export function assertCorrectionsPathIsIgnored(path = correctionsPath()): void {
-  const absolute = resolve(path);
-  if (!absolute.startsWith(repoRoot + '/')) return;
   try {
-    execFileSync('git', ['check-ignore', '-q', '--no-index', absolute], { cwd: repoRoot });
-  } catch {
+    assertPathIsGitIgnored(path, 'corrections');
+  } catch (error) {
     throw new Error(
-      `Refusing to write corrections to ${absolute}: git does not ignore it, and every record `
-        + 'quotes real people. Add it to .gitignore or set AMELIA_CORRECTIONS_PATH somewhere outside the repo.',
+      `${(error as Error).message} Or set AMELIA_CORRECTIONS_PATH somewhere outside the repo.`,
     );
   }
 }
