@@ -14,6 +14,7 @@
  */
 
 import { audioConfig } from './config'
+import { repairRepeatLoops, type RepairReport } from './loop-repair'
 import { restorePunctuation } from './punctuation'
 import { SAMPLE_RATE } from './types'
 import { encodeWavBytes } from './wav-util'
@@ -90,40 +91,89 @@ const MAX_UPLOAD_BYTES = 24 * 1024 * 1024
 const SEAM_SEARCH_MS = 30_000
 const SEAM_WINDOW_MS = 400
 
+export interface TranscribeOptions {
+  apiKey?: string
+  model?: string
+  signal?: AbortSignal
+  /** Candidate proper nouns, most likely first. Truncated to VOCABULARY_MAX_TERMS. */
+  vocabulary?: readonly string[]
+  /**
+   * Re-decode stretches where the decoder repeated one line, and keep whichever
+   * answer the isolated decode gives. On by default: a loop is not cosmetic, it
+   * stands where real speech was. See loop-repair.ts.
+   */
+  repairLoops?: boolean
+  onRepairReport?: (report: RepairReport) => void
+}
+
 export async function transcribeWithTimings(
   wav: Uint8Array,
-  options: {
-    apiKey?: string
-    model?: string
-    signal?: AbortSignal
-    /** Candidate proper nouns, most likely first. Truncated to VOCABULARY_MAX_TERMS. */
-    vocabulary?: readonly string[]
-  } = {},
+  options: TranscribeOptions = {},
 ): Promise<TimedTranscript> {
-  if (wav.byteLength <= MAX_UPLOAD_BYTES) return transcribeOne(wav, options)
+  return readTimedTranscript(await transcribeRaw(wav, options))
+}
 
+/**
+ * The same pass, as the API's own payload shape.
+ *
+ * The fixtures in fixtures/real/*.whisper.json are verbose_json bodies, and
+ * every reader of them calls `readTimedTranscript` itself — which restores
+ * punctuation. A script that saved the processed shape here would have it
+ * restored a second time on the way back in, so the recording pipeline and the
+ * live pass share this and differ only in whether they save the result.
+ */
+export async function transcribeRaw(
+  wav: Uint8Array,
+  options: TranscribeOptions = {},
+): Promise<WhisperResponse> {
   const { samples } = readWav(Buffer.from(wav.buffer, wav.byteOffset, wav.byteLength))
-  const parts: TimedTranscript[] = []
+  const spans = planChunks(samples, MAX_UPLOAD_BYTES)
+
+  const parts: WhisperResponse[] = []
   const offsets: number[] = []
-  for (const span of planChunks(samples, MAX_UPLOAD_BYTES)) {
-    offsets.push(Math.round((span.from / SAMPLE_RATE) * 1000))
-    parts.push(await transcribeOne(encodeWavBytes(samples.subarray(span.from, span.to)), options))
+  for (const span of spans) {
+    offsets.push(span.from / SAMPLE_RATE)
+    // A recording that already fits is sent as it arrived rather than re-encoded
+    // from the decoded samples, so nothing about the bytes depends on this path.
+    const bytes = spans.length === 1 ? wav : encodeWavBytes(samples.subarray(span.from, span.to))
+    parts.push(await transcribeOne(bytes, options))
   }
+  const merged = mergeRaw(parts, offsets)
+  if (options.repairLoops === false) return merged
+
+  const duration = samples.length / SAMPLE_RATE
+  return repairRepeatLoops(
+    merged,
+    async (from, to) =>
+      transcribeOne(
+        encodeWavBytes(samples.subarray(Math.round(from * SAMPLE_RATE), Math.round(to * SAMPLE_RATE))),
+        options,
+      ),
+    { duration, onReport: options.onRepairReport },
+  )
+}
+
+/** Chunk payloads as one payload, every time shifted onto the whole recording. */
+function mergeRaw(parts: readonly WhisperResponse[], offsets: readonly number[]): WhisperResponse {
   return {
-    text: parts.map((part) => part.text).join(' ').trim(),
+    text: parts.map((part) => (part.text ?? '').trim()).filter(Boolean).join(' '),
     segments: parts.flatMap((part, index) =>
-      part.segments.map((segment) => ({
-        ...segment,
-        start_ms: segment.start_ms + offsets[index],
-        end_ms: segment.end_ms + offsets[index],
-      })),
+      (part.segments ?? [])
+        .filter((segment) => segment.start !== undefined && segment.end !== undefined)
+        .map((segment) => ({
+          start: (segment.start as number) + offsets[index],
+          end: (segment.end as number) + offsets[index],
+          text: (segment.text ?? '').trim(),
+        })),
     ),
     words: parts.flatMap((part, index) =>
-      part.words.map((word) => ({
-        ...word,
-        start_ms: word.start_ms + offsets[index],
-        end_ms: word.end_ms + offsets[index],
-      })),
+      (part.words ?? [])
+        .filter((word) => word.start !== undefined && word.end !== undefined)
+        .map((word) => ({
+          word: word.word ?? '',
+          start: (word.start as number) + offsets[index],
+          end: (word.end as number) + offsets[index],
+        })),
     ),
   }
 }
@@ -164,15 +214,7 @@ function quietestCut(samples: Float32Array, from: number, limit: number): number
   return Math.round(best)
 }
 
-async function transcribeOne(
-  wav: Uint8Array,
-  options: {
-    apiKey?: string
-    model?: string
-    signal?: AbortSignal
-    vocabulary?: readonly string[]
-  },
-): Promise<TimedTranscript> {
+async function transcribeOne(wav: Uint8Array, options: TranscribeOptions): Promise<WhisperResponse> {
   const config = audioConfig()
   const apiKey = options.apiKey ?? config.openaiApiKey
   if (!apiKey) throw new Error('OPENAI_API_KEY is required for the final transcription pass')
@@ -208,7 +250,7 @@ async function transcribeOne(
       `transcription failed (${response.status}): ${payload.error?.message ?? JSON.stringify(payload)}`,
     )
   }
-  return readTimedTranscript(payload)
+  return payload
 }
 
 /**

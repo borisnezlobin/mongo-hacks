@@ -38,6 +38,7 @@ import type { AttributionInput, AttributionResult } from '../identity'
 import { audioConfig, type AudioConfig } from './config'
 import { agglomerateByAverageLinkage } from './agglomerate'
 import { diarizeAudio, type SpeakerTurn } from './diarize-sidecar'
+import { dropSilentRepeats } from './loop-repair'
 import { embedPcm, embedPcmForClustering } from './embed-client'
 import { transcribeWithTimings } from './whisper-client'
 import { SessionRecorder } from './session-recorder'
@@ -883,8 +884,22 @@ export class AudioSession {
       if (diarization.turns.length === 0) {
         return { ...base, ran: true, reason: 'diarization heard nobody' }
       }
-      const turns = await this.correctBySentence(readWav(wav).samples, transcript, diarization.turns)
-      lines = joinWordsToSpeakers(transcript.words, turns, { segments: transcript.segments })
+      // Now that there is a diarization, a repetition run standing over a span
+      // where nobody spoke is settled: it is text over applause. This is the
+      // half of the loop problem a second decode cannot reach, because a fresh
+      // decode of the same applause hears the same thing. See loop-repair.ts.
+      const cleaned = dropSilentRepeats(transcript, diarization.turns, {
+        onReport: (dropped) => {
+          for (const run of dropped) {
+            console.warn(
+              `dropped ${run.count} x ${JSON.stringify(run.text)} at ` +
+                `${Math.round(run.from / 1000)}s: no diarized speech under it`,
+            )
+          }
+        },
+      })
+      const turns = await this.correctBySentence(readWav(wav).samples, cleaned, diarization.turns)
+      lines = joinWordsToSpeakers(cleaned.words, turns, { segments: cleaned.segments })
       this.recordSuccess('diarization')
     } catch (error) {
       this.recordFailure('diarization', error, 'final transcription and diarization pass')
