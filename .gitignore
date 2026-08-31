@@ -47,6 +47,11 @@ eval/real/*.json
 # left to whoever next runs a sweep to notice.
 eval/real/**/*.json
 eval/real/*.log
+# A readable transcript is the same personal data as the .json it was rendered
+# from, and easier to read by accident. eval/real/write-transcript.mts refuses
+# to write a path git can see, so this rule is what makes that script work at
+# all rather than a second line of defence.
+eval/real/*.txt
 
 # A speechbrain savedir that stringified to "None" — downloaded model
 # checkpoints, not source. Regenerated on demand by the sidecar.
