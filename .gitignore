@@ -1,6 +1,9 @@
 node_modules/
 .expo/
 dist/
+# Agent worktrees: a second full checkout of this repo, one `git add -A` away
+# from being committed into it. See vitest.config.ts for the other half.
+.claude/worktrees/
 .env
 *.log
 .DS_Store
