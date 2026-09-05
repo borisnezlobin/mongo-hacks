@@ -1,9 +1,13 @@
 import type {
   EnrollVoiceRequest,
   EnrollVoiceResponse,
+  FaceClaim,
+  Faceprint,
   Fact,
   Id,
   IdentityConfidence,
+  IdentityConflictEvent,
+  IdentitySource,
   MergePeopleRequest,
   NamePersonRequest,
   Person,
@@ -36,6 +40,7 @@ import {
   type Decision,
 } from './matcher';
 import { mergeCandidates, type DuplicateCandidate, type DuplicateOptions } from './duplicates';
+import { fuse, type FusedDecision } from './fusion';
 
 type Filter = Record<string, unknown>;
 type Update<T> = { $set: Partial<T> };
@@ -75,6 +80,13 @@ export interface IdentityServiceOptions {
     utterances: IdentityCollection<Utterance>;
     facts: IdentityCollection<Fact>;
     promises: IdentityCollection<PromiseMemory>;
+    /**
+     * Optional because faces are a second capture surface, not a requirement.
+     * A deployment with no camera never has this collection, and identity works
+     * exactly as it did — but a merge must re-point faceprints where they exist,
+     * or the survivor loses the face that recognised them.
+     */
+    faceprints?: IdentityCollection<Faceprint>;
   };
   bus: ServerDependencies['bus'];
   now?: () => Date;
@@ -89,6 +101,23 @@ export interface AttributionInput {
   session_mean?: number[] | null;
   /** The session cluster this pooled speech came from, when the caller tracks one. */
   session_speaker?: string;
+  /**
+   * What the camera saw over the same stretch of speech. Weighed against the
+   * voice rather than trusted over it; see fusion.ts.
+   */
+  face_claims?: FaceClaim[];
+  /**
+   * Whether an unrecognised voice may become a new person. Default true.
+   *
+   * False on a pavement: 'street' capture records the owner and whoever is
+   * demonstrably talking to them, and minting a person for every passer-by the
+   * mic caught would fill the people list with strangers who are then kept
+   * forever, which is the opposite of what that mode is for.
+   */
+  allow_mint?: boolean;
+  /** Extent of the speech this input pooled, for the conflict event. */
+  start_ms?: number;
+  end_ms?: number;
 }
 
 export type AttributionResult =
@@ -96,9 +125,15 @@ export type AttributionResult =
   | {
       status: 'matched';
       person_id: string;
-      voiceprint_id: string;
+      /**
+       * Absent when a face carried the claim on its own and the speech was too
+       * thin to harvest a print from: there is no voiceprint behind it, and
+       * naming one that does not exist is worse than saying nothing.
+       */
+      voiceprint_id?: string;
       confidence: number;
       identity_confidence: IdentityConfidence;
+      source?: IdentitySource;
     }
   | {
       status: 'created';
@@ -109,6 +144,14 @@ export type AttributionResult =
 
 export interface SessionClusterInput extends Omit<AttributionInput, 'conversation_id'> {
   session_speaker: string;
+}
+
+export interface FaceAttributionInput {
+  conversation_id: string;
+  person_id: Id;
+  utterance_ids: string[];
+  face_score: number;
+  track_id: Id;
 }
 
 /** The pooled speech behind a name the user just typed, so it reinforces. */
@@ -132,6 +175,16 @@ export interface IdentityService {
     conversation_id: string;
     clusters: SessionClusterInput[];
   }): Promise<Record<string, AttributionResult>>;
+  /**
+   * Name a cluster from the face alone.
+   *
+   * For speech under the embedding floor — a "yeah" and a laugh — which the
+   * voice path cannot and should not touch, while the camera has been looking
+   * at the person saying it for several seconds. No print is written and no
+   * voice evidence is claimed; this only puts a name on lines that would
+   * otherwise stay anonymous forever.
+   */
+  attributeByFace(input: FaceAttributionInput): Promise<AttributionResult>;
   isOwnerVoice(
     embedding: number[],
     sessionMean?: number[] | null,
@@ -195,6 +248,28 @@ export function rawCosine(atlasScore: number): number {
   return Math.round(raw * 1e12) / 1e12;
 }
 
+/**
+ * The face claim worth weighing against the voice: the most confident one, and
+ * among equals the best-scoring. More than one confirmed face over the same
+ * speech is two people in frame while one of them talks, and the strongest
+ * claim is the honest single answer to give the fusion.
+ */
+export function strongestClaim(claims?: readonly FaceClaim[]): FaceClaim | undefined {
+  const rank = (claim: FaceClaim): number =>
+    claim.confidence === 'confirmed' ? 2 : claim.confidence === 'provisional' ? 1 : 0;
+  return (claims ?? [])
+    .filter((claim) => claim.person_id !== undefined)
+    .reduce<FaceClaim | undefined>((best, claim) => {
+      if (!best) return claim;
+      if (rank(claim) !== rank(best)) return rank(claim) > rank(best) ? claim : best;
+      return claim.score > best.score ? claim : best;
+    }, undefined);
+}
+
+function hasConfirmedFace(claims?: readonly FaceClaim[]): boolean {
+  return strongestClaim(claims)?.confidence === 'confirmed';
+}
+
 /** One person per session cluster: who a conversation has already spoken for. */
 interface Claim {
   person_id: Id;
@@ -206,6 +281,14 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
   const { collections, bus } = options;
   const timestamp = () => (options.now?.() ?? new Date()).toISOString();
   const claimsByConversation = new Map<string, Claim[]>();
+  /**
+   * Face-versus-voice disagreements this process has seen, keyed by the pair.
+   *
+   * In memory on purpose. A conflict is a question, not a record: it is worth
+   * surfacing while the app is up so the owner can answer it, and it is not
+   * worth a collection that would then need pruning when he merges the pair.
+   */
+  const conflicts = new Map<string, IdentityConflictEvent>();
 
   const envNumber = (name: string, fallback: number): number => {
     const raw = process.env[name];
@@ -256,14 +339,25 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
   const attachUtterances = async (
     utteranceIds: string[],
     personId: Id,
-    voiceprintId: Id,
+    voiceprintId?: Id,
   ): Promise<void> => {
     if (utteranceIds.length === 0) return;
     await collections.utterances.updateMany(
       { _id: { $in: utteranceIds }, owner_id: OWNER_ID },
-      { $set: { person_id: personId, voiceprint_id: voiceprintId, updated_at: timestamp() } },
+      {
+        $set: {
+          person_id: personId,
+          // Left alone when a face carried the claim: there is no print behind
+          // it, and blanking the one the line already had would lose evidence.
+          ...(voiceprintId ? { voiceprint_id: voiceprintId } : {}),
+          updated_at: timestamp(),
+        },
+      },
     );
   };
+
+  const findPerson = async (personId: Id): Promise<Person | null> =>
+    collections.people.findOne({ _id: personId, owner_id: OWNER_ID });
 
   const insertPrint = async (print: Voiceprint): Promise<void> => {
     await collections.voiceprints.insertOne(print);
@@ -349,75 +443,121 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
     person: Person,
     utteranceIds: string[],
     confidence: IdentityConfidence,
-    voiceprintId?: Id,
-    score?: number,
+    evidence: {
+      voiceprintId?: Id;
+      score?: number;
+      source?: IdentitySource;
+      faceScore?: number;
+      faceTrackId?: Id;
+    } = {},
   ): void => {
     bus.emit({
       type: 'identity',
       conversation_id: conversationId,
       person_id: person._id,
-      ...(voiceprintId ? { voiceprint_id: voiceprintId } : {}),
+      ...(evidence.voiceprintId ? { voiceprint_id: evidence.voiceprintId } : {}),
       name: person.name,
       utterance_ids: utteranceIds,
       confidence,
-      ...(score === undefined ? {} : { score }),
+      ...(evidence.score === undefined ? {} : { score: evidence.score }),
+      ...(evidence.source ? { source: evidence.source } : {}),
+      ...(evidence.faceScore === undefined ? {} : { face_score: evidence.faceScore }),
+      ...(evidence.faceTrackId ? { face_track_id: evidence.faceTrackId } : {}),
     });
   };
 
   /**
-   * Turn one cluster's decision into records and events.
+   * Write a print because a face vouched for the speaker.
+   *
+   * The cross-session floor is deliberately bypassed. That floor exists because
+   * thin pooled speech recognises the same person in another room only two
+   * thirds of the time and the miss mints a duplicate — but the duplicate is
+   * exactly what cannot happen here, because the person is already known from
+   * the face. What is left is a thin print that may be imperfect, which
+   * `taught_by: 'face'` is here to make findable. The three-second embedding
+   * floor still holds: below it there is no print worth writing at all.
+   */
+  const harvestVoiceprint = async (personId: Id, input: AttributionInput): Promise<Id | undefined> => {
+    if (input.duration_ms < envNumber('EMBED_MIN_MS', EMBED_MIN_MS)) return undefined;
+    const print: Voiceprint = {
+      _id: crypto.randomUUID(),
+      owner_id: OWNER_ID,
+      person_id: personId,
+      embedding: input.embedding,
+      ...(input.session_mean ? { session_mean: input.session_mean } : {}),
+      duration_ms: input.duration_ms,
+      source_conversation_id: input.conversation_id,
+      taught_by: 'face',
+      created_at: timestamp(),
+    };
+    await insertPrint(print);
+    return print._id;
+  };
+
+  /**
+   * A person the fused decision named, turned into records and events.
    *
    * Nothing is written to an utterance below `confirmed`: a provisional claim
    * is shown live as a guess and must not become the filed answer, because
    * facts and promises are read back off utterance.person_id.
    */
-  const applyDecision = async (
+  const applyMatchedPerson = async (
     conversationId: string,
     input: AttributionInput,
-    decision: Decision,
+    fused: Extract<FusedDecision, { status: 'matched' }>,
     people: Map<Id, Person>,
   ): Promise<AttributionResult> => {
-    const tier = confidenceFor(input.duration_ms);
-    if (decision.status === 'ambiguous') return { status: 'pending', reason: 'ambiguous' };
-
-    if (decision.status === 'matched') {
-      const person = people.get(decision.person_id);
-      if (!person) return { status: 'pending', reason: 'no_match' };
-      const claim = recordClaim(conversationId, person._id, input.utterance_ids);
-      let voiceprintId = decision.voiceprint_id;
-      if (tier === 'confirmed') {
-        if (!claim.reinforced) {
-          // Thin pooled speech does not earn a new print. The utterances still
-          // file under the print that matched, so nothing downstream loses its
-          // voiceprint_id when reinforcement declines.
-          voiceprintId = (await reinforce(person._id, input, timestamp())) ?? voiceprintId;
-          claim.reinforced = true;
-        }
-        await attachUtterances(input.utterance_ids, person._id, voiceprintId);
+    const person = people.get(fused.person_id) ?? (await findPerson(fused.person_id));
+    if (!person) return { status: 'pending', reason: 'no_match' };
+    const claim = recordClaim(conversationId, person._id, input.utterance_ids);
+    let voiceprintId = fused.voiceprint_id;
+    if (fused.confidence === 'confirmed') {
+      if (!claim.reinforced) {
+        // Thin pooled speech does not earn a new print. The utterances still
+        // file under the print that matched, so nothing downstream loses its
+        // voiceprint_id when reinforcement declines.
+        if (fused.reinforce) voiceprintId = (await reinforce(person._id, input, timestamp())) ?? voiceprintId;
+        else if (fused.harvest_voice) voiceprintId = (await harvestVoiceprint(person._id, input)) ?? voiceprintId;
+        claim.reinforced = true;
       }
-      emitIdentity(conversationId, person, input.utterance_ids, tier, voiceprintId, decision.score);
-      return {
-        status: 'matched',
-        person_id: person._id,
-        voiceprint_id: voiceprintId,
-        confidence: decision.score,
-        identity_confidence: tier,
-      };
+      await attachUtterances(input.utterance_ids, person._id, voiceprintId);
     }
+    emitIdentity(conversationId, person, input.utterance_ids, fused.confidence, {
+      voiceprintId,
+      score: fused.voice_score,
+      source: fused.source,
+      faceScore: fused.face_score,
+      faceTrackId: fused.face_track_id,
+    });
+    return {
+      status: 'matched',
+      person_id: person._id,
+      ...(voiceprintId ? { voiceprint_id: voiceprintId } : {}),
+      confidence: fused.voice_score,
+      identity_confidence: fused.confidence,
+      source: fused.source,
+    };
+  };
 
-    /**
-     * Nobody we know. Minting a person here is only worth it once there is
-     * enough pooled speech for the print to recognise them again — below that
-     * the same stranger becomes a fresh "Unknown" in every conversation, which
-     * is how the people list filled with ghosts.
-     */
-    if (tier !== 'confirmed') return { status: 'pending', reason: 'no_match' };
-
+  /**
+   * Nobody we know. Minting a person is only worth it once there is enough
+   * pooled speech for the print to recognise them again — below that the same
+   * stranger becomes a fresh "Unknown" in every conversation, which is how the
+   * people list filled with ghosts.
+   */
+  const applyMintedPerson = async (
+    conversationId: string,
+    input: AttributionInput,
+    people: Map<Id, Person>,
+  ): Promise<AttributionResult> => {
     const now = timestamp();
     const person: Person = {
       _id: crypto.randomUUID(),
       owner_id: OWNER_ID,
       name: UNNAMED_PERSON_NAME,
+      // Said in the record rather than inferred from the name, so a person
+      // actually called "Unnamed voice" is never treated as waiting for a name.
+      is_unnamed: true,
       created_at: now,
       updated_at: now,
     };
@@ -427,18 +567,126 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
     const claim = recordClaim(conversationId, person._id, input.utterance_ids);
     claim.reinforced = true;
     await attachUtterances(input.utterance_ids, person._id, voiceprintId);
-    emitIdentity(conversationId, person, input.utterance_ids, 'confirmed', voiceprintId);
+    emitIdentity(conversationId, person, input.utterance_ids, 'confirmed', {
+      voiceprintId,
+      source: 'voice',
+    });
     return { status: 'created', person_id: person._id, voiceprint_id: voiceprintId, identity_confidence: 'confirmed' };
   };
 
-  const gate = (durationMs: number): AttributionResult | null => {
-    if (durationMs < envNumber('EMBED_MIN_MS', EMBED_MIN_MS)) {
+  /**
+   * The face and the voice both named somebody, confidently, and they are not
+   * the same person. Nothing is written and nobody is named: the pair goes to
+   * the owner as a merge candidate and waits there.
+   */
+  const applyConflict = (
+    conversationId: string,
+    input: AttributionInput,
+    fused: Extract<FusedDecision, { status: 'conflict' }>,
+  ): AttributionResult => {
+    const event: IdentityConflictEvent = {
+      type: 'identity_conflict',
+      conversation_id: conversationId,
+      face_person_id: fused.face_person_id,
+      voice_person_id: fused.voice_person_id,
+      utterance_ids: input.utterance_ids,
+      face_score: fused.face_score,
+      voice_score: fused.voice_score,
+      start_ms: input.start_ms ?? 0,
+      end_ms: input.end_ms ?? input.duration_ms,
+    };
+    conflicts.set(`${fused.face_person_id}:${fused.voice_person_id}`, event);
+    bus.emit(event);
+    return { status: 'pending', reason: 'ambiguous' };
+  };
+
+  const applyPendingResult = (
+    reason: 'no_match' | 'ambiguous',
+  ): AttributionResult => ({ status: 'pending', reason });
+
+  /**
+   * One cluster's evidence, dispatched. The rules themselves are in fusion.ts,
+   * which is pure; everything here is the writing down.
+   */
+  const applyDecision = async (
+    conversationId: string,
+    input: AttributionInput,
+    decision: Decision,
+    people: Map<Id, Person>,
+  ): Promise<AttributionResult> => {
+    const tier = confidenceFor(input.duration_ms);
+    const fused = fuse(decision, tier, strongestClaim(input.face_claims));
+    if (fused.status === 'conflict') return applyConflict(conversationId, input, fused);
+    if (fused.status === 'matched') return applyMatchedPerson(conversationId, input, fused, people);
+    if (fused.reason === 'ambiguous') return applyPendingResult('ambiguous');
+    if (tier !== 'confirmed' || input.allow_mint === false) return applyPendingResult('no_match');
+    return applyMintedPerson(conversationId, input, people);
+  };
+
+  /**
+   * A confirmed face lets a cluster be asked about before the voice alone would
+   * be worth asking about: the two identifiers are independent, so the speech
+   * only has to be long enough to embed, not long enough to name somebody by.
+   */
+  const gate = (input: { duration_ms: number; face_claims?: FaceClaim[] }): AttributionResult | null => {
+    if (input.duration_ms < envNumber('EMBED_MIN_MS', EMBED_MIN_MS)) {
       return { status: 'pending', reason: 'below_floor' };
     }
-    if (durationMs < envNumber('PROVISIONAL_SPEECH_MS', PROVISIONAL_SPEECH_MS)) {
+    if (hasConfirmedFace(input.face_claims)) return null;
+    if (input.duration_ms < envNumber('PROVISIONAL_SPEECH_MS', PROVISIONAL_SPEECH_MS)) {
       return { status: 'pending', reason: 'gathering' };
     }
     return null;
+  };
+
+  /**
+   * Face-versus-voice disagreements, as merge questions.
+   *
+   * The score carried is the face cosine — the evidence that raised the pair.
+   * A conflict already proposed by voice resemblance is left to that candidate
+   * rather than listed twice.
+   */
+  const conflictCandidates = (
+    people: Map<Id, Person>,
+    proposed: readonly DuplicateCandidate[],
+  ): DuplicateCandidate[] => {
+    const seen = new Set(
+      proposed.map((candidate) => [...candidate.sides.map((side) => side.person_id)].sort().join(':')),
+    );
+    const candidates: DuplicateCandidate[] = [];
+    for (const conflict of conflicts.values()) {
+      const face = people.get(conflict.face_person_id);
+      const voice = people.get(conflict.voice_person_id);
+      if (!face || !voice) continue;
+      const key = [face._id, voice._id].sort().join(':');
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [first, second] = face.created_at <= voice.created_at ? [face, voice] : [voice, face];
+      candidates.push({
+        score: conflict.face_score,
+        sides: [
+          { person_id: first._id, name: first.name },
+          { person_id: second._id, name: second.name },
+        ],
+        reason: 'face_voice_conflict',
+      });
+    }
+    return candidates;
+  };
+
+  /**
+   * The face to show for a person, after their faceprints have moved.
+   *
+   * `Person.avatar_thumbnail` is denormalised so every list screen can render a
+   * face off the one call it already makes, which means a merge has to refresh
+   * it — otherwise the survivor keeps an avatar cropped from a record that no
+   * longer exists, or none at all while the person they absorbed had one.
+   */
+  const bestThumbnail = async (personId: Id): Promise<string | undefined> => {
+    const prints = await collections.faceprints?.find({ owner_id: OWNER_ID, person_id: personId }).toArray();
+    return (prints ?? [])
+      .filter((print) => print.thumbnail !== undefined)
+      .sort((left, right) => right.quality - left.quality)[0]?.thumbnail;
   };
 
   const thresholds = () => ({
@@ -448,7 +696,7 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
 
   return {
     async attributeSpeaker(input) {
-      const blocked = gate(input.duration_ms);
+      const blocked = gate(input);
       if (blocked) return blocked;
 
       const { prints, people } = await livePrints();
@@ -464,7 +712,7 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
       const results: Record<string, AttributionResult> = {};
       const eligible: SessionClusterInput[] = [];
       for (const cluster of clusters) {
-        const blocked = gate(cluster.duration_ms);
+        const blocked = gate(cluster);
         if (blocked) results[cluster.session_speaker] = blocked;
         else eligible.push(cluster);
       }
@@ -492,6 +740,25 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
         );
       }
       return results;
+    },
+
+    async attributeByFace({ conversation_id, person_id, utterance_ids, face_score, track_id }) {
+      const person = await findPerson(person_id);
+      if (!person) return { status: 'pending', reason: 'no_match' };
+      recordClaim(conversation_id, person._id, utterance_ids);
+      await attachUtterances(utterance_ids, person._id);
+      emitIdentity(conversation_id, person, utterance_ids, 'confirmed', {
+        source: 'face',
+        faceScore: face_score,
+        faceTrackId: track_id,
+      });
+      return {
+        status: 'matched',
+        person_id: person._id,
+        confidence: face_score,
+        identity_confidence: 'confirmed',
+        source: 'face',
+      };
     },
 
     async isOwnerVoice(embedding, sessionMean) {
@@ -614,7 +881,13 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
 
     async duplicateCandidates(options) {
       const { prints, people } = await livePrints();
-      return mergeCandidates([...people.values()], prints, options);
+      const byVoice = mergeCandidates([...people.values()], prints, options);
+      // Conflicts first, whatever their score: a face and a voice disagreeing
+      // over one breath is direct evidence about one pair, where a cosine is a
+      // resemblance. The two numbers are not on the same scale, so ranking them
+      // against each other would be arithmetic on nothing.
+      const all = [...conflictCandidates(people, byVoice), ...byVoice];
+      return options?.limit === undefined ? all : all.slice(0, options.limit);
     },
 
     async mergePeople(request) {
@@ -639,12 +912,28 @@ export function createIdentityService(options: IdentityServiceOptions): Identity
       await collections.voiceprints.updateMany(affectedFilter, {
         $set: { person_id: survivor._id },
       });
+      await collections.faceprints?.updateMany(affectedFilter, {
+        $set: { person_id: survivor._id },
+      });
       await collections.utterances.updateMany(affectedFilter, {
         $set: { person_id: survivor._id, updated_at: timestamp() },
       });
       await collections.facts.updateMany(affectedFilter, { $set: { person_id: survivor._id } });
       await collections.promises.updateMany(affectedFilter, { $set: { person_id: survivor._id } });
       await collections.people.deleteMany({ _id: { $in: loserIds }, owner_id: OWNER_ID });
+      const avatar = await bestThumbnail(survivor._id);
+      if (avatar && avatar !== survivor.avatar_thumbnail) {
+        await collections.people.updateOne(
+          { _id: survivor._id, owner_id: OWNER_ID },
+          { $set: { avatar_thumbnail: avatar, updated_at: timestamp() } },
+        );
+        survivor.avatar_thumbnail = avatar;
+      }
+      for (const [key, conflict] of conflicts) {
+        if (loserIds.includes(conflict.face_person_id) || loserIds.includes(conflict.voice_person_id)) {
+          conflicts.delete(key);
+        }
+      }
 
       for (const conversationId of conversationIds) {
         emitIdentity(

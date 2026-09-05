@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import type {
   EnrollVoiceRequest,
+  Faceprint,
   Fact,
   MergePeopleRequest,
   NamePersonRequest,
@@ -19,14 +20,17 @@ import {
   type VoiceprintCollection,
 } from './service';
 
-export { UNNAMED_PERSON_NAME, createIdentityService } from './service';
+export { UNNAMED_PERSON_NAME, createIdentityService, strongestClaim } from './service';
 export type {
   AttributionInput,
   AttributionResult,
+  FaceAttributionInput,
   IdentityService,
   IdentityServiceOptions,
   NameEnrollment,
 } from './service';
+export { fuse, fuseProbabilities } from './fusion';
+export type { FusedDecision } from './fusion';
 
 function collection<T>(value: unknown): IdentityCollection<T> {
   return value as IdentityCollection<T>;
@@ -68,6 +72,9 @@ export function identityServiceFor(deps: ServerDependencies): Promise<IdentitySe
         utterances: collection<Utterance>(storage.collection<Utterance>('utterances')),
         facts: collection<Fact>(storage.collection<Fact>('facts')),
         promises: collection<PromiseMemory>(storage.collection<PromiseMemory>('promises')),
+        // Present so a merge re-points faces and refreshes the survivor's
+        // avatar. Nothing else in this service reads it.
+        faceprints: collection<Faceprint>(storage.collection<Faceprint>('faceprints')),
       },
       bus: deps.bus,
     });

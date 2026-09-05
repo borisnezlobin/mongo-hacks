@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Fact, Person, PromiseMemory, Utterance, Voiceprint } from '../../shared/contracts';
+import type {
+  FaceClaim,
+  Faceprint,
+  Fact,
+  Person,
+  PromiseMemory,
+  Utterance,
+  Voiceprint,
+} from '../../shared/contracts';
 import {
   ATTRIBUTION_MARGIN,
   ATTRIBUTION_THRESHOLD,
@@ -92,6 +100,7 @@ interface InitialCollections {
   utterances: Utterance[];
   facts: Fact[];
   promises: PromiseMemory[];
+  faceprints: Faceprint[];
 }
 
 const AT = '2026-01-01T00:00:00.000Z';
@@ -149,20 +158,45 @@ function at(similarity: number): number[] {
   return [similarity, Math.sqrt(1 - similarity * similarity), 0];
 }
 
+function faceClaim(personId: string | undefined, extra: Partial<FaceClaim> = {}): FaceClaim {
+  return {
+    ...(personId ? { person_id: personId } : {}),
+    track_id: 'track-1',
+    confidence: 'confirmed',
+    score: 0.62,
+    is_near: true,
+    speaking: true,
+    ...extra,
+  };
+}
+
+function faceprint(id: string, personId: string, extra: Partial<Faceprint> = {}): Faceprint {
+  return {
+    _id: id,
+    owner_id: OWNER_ID,
+    person_id: personId,
+    embedding: [1, 0, 0],
+    quality: 0.9,
+    created_at: AT,
+    ...extra,
+  };
+}
+
 function createHarness(initial: Partial<InitialCollections> = {}) {
   const people = new FakeCollection<Person>(initial.people);
   const voiceprints = new FakeCollection<StoredVoiceprint>(initial.voiceprints);
   const utterances = new FakeCollection<Utterance>(initial.utterances);
   const facts = new FakeCollection<Fact>(initial.facts);
   const promises = new FakeCollection<PromiseMemory>(initial.promises);
+  const faceprints = new FakeCollection<Faceprint>(initial.faceprints);
   const emit = vi.fn();
   const service = createIdentityService({
-    collections: { people, voiceprints, utterances, facts, promises },
+    collections: { people, voiceprints, utterances, facts, promises, faceprints },
     bus: { emit, subscribe: vi.fn(() => () => {}) },
     now: () => new Date(NOW),
   });
 
-  return { service, people, voiceprints, utterances, facts, promises, emit };
+  return { service, people, voiceprints, utterances, facts, promises, faceprints, emit };
 }
 
 describe('attribution gates', () => {
@@ -1044,5 +1078,248 @@ describe('merging', () => {
     await expect(harness.service.mergePeople({ person_ids: ['ann', 'ann'] })).rejects.toThrow(
       'At least two people',
     );
+  });
+});
+
+describe('a face vouching for a voice', () => {
+  /**
+   * The point of the second identifier. Ben is in frame and confirmed, the
+   * voice matches nobody, and thirty seconds of speech is below the
+   * cross-session floor — which exists to stop a thin print minting a
+   * duplicate. There is no duplicate to be had here: the face already said who
+   * this is. So the print is written, tagged with what vouched for it.
+   */
+  it('harvests a print below the cross-session floor when a confirmed face names the speaker', async () => {
+    const harness = createHarness({
+      people: [person('ben', 'Ben')],
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: CROSS_SESSION_SPEECH_MS - 1,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+      face_claims: [faceClaim('ben')],
+    });
+
+    expect(result).toMatchObject({ status: 'matched', person_id: 'ben', source: 'face' });
+    expect(harness.voiceprints.documents).toHaveLength(1);
+    expect(harness.voiceprints.documents[0]).toMatchObject({
+      person_id: 'ben',
+      taught_by: 'face',
+      duration_ms: CROSS_SESSION_SPEECH_MS - 1,
+    });
+    expect(harness.utterances.documents[0].person_id).toBe('ben');
+  });
+
+  it('answers a face-backed cluster before the voice alone would be worth asking about', async () => {
+    const harness = createHarness({
+      people: [person('ben', 'Ben')],
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: EMBED_MIN_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+      face_claims: [faceClaim('ben')],
+    });
+
+    expect(result).toMatchObject({ status: 'matched', person_id: 'ben', identity_confidence: 'confirmed' });
+    expect(harness.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'identity', source: 'face', face_score: 0.62 }),
+    );
+  });
+
+  /** The embedding floor is not negotiable: below it there is no print at all. */
+  it('does not harvest a print from speech too short to embed', async () => {
+    const harness = createHarness({
+      people: [person('ben', 'Ben')],
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: EMBED_MIN_MS - 1,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+      face_claims: [faceClaim('ben')],
+    });
+
+    expect(result).toEqual({ status: 'pending', reason: 'below_floor' });
+    expect(harness.voiceprints.documents).toEqual([]);
+  });
+
+  it('keeps a face-taught print inside the per-person cap', async () => {
+    const existing = Array.from({ length: MAX_VOICEPRINTS_PER_PERSON }, (_, index) =>
+      voiceprint(`print-${index}`, 'ben', [0, 1, 0], { duration_ms: 4_000 + index }),
+    );
+    const harness = createHarness({
+      people: [person('ben', 'Ben')],
+      voiceprints: existing,
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: CONFIRMED_SPEECH_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+      face_claims: [faceClaim('ben')],
+    });
+
+    expect(harness.voiceprints.documents).toHaveLength(MAX_VOICEPRINTS_PER_PERSON);
+  });
+
+  /**
+   * A cluster the voice cannot touch at all — a "yeah" and a laugh — while the
+   * camera has been looking at whoever said it for several seconds.
+   */
+  it('names a cluster from the face alone, without inventing a voiceprint for it', async () => {
+    const harness = createHarness({
+      people: [person('ben', 'Ben')],
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    const result = await harness.service.attributeByFace({
+      conversation_id: 'conversation-1',
+      person_id: 'ben',
+      utterance_ids: ['utterance-1'],
+      face_score: 0.71,
+      track_id: 'track-4',
+    });
+
+    expect(result).toMatchObject({
+      status: 'matched',
+      person_id: 'ben',
+      identity_confidence: 'confirmed',
+      source: 'face',
+    });
+    expect(result).not.toHaveProperty('voiceprint_id');
+    expect(harness.voiceprints.documents).toEqual([]);
+    expect(harness.utterances.documents[0].person_id).toBe('ben');
+    expect(harness.emit).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'identity', source: 'face', face_track_id: 'track-4' }),
+    );
+  });
+});
+
+describe('a face and a voice that disagree', () => {
+  const conflictInput = {
+    embedding: [1, 0, 0],
+    duration_ms: CONFIRMED_SPEECH_MS,
+    conversation_id: 'conversation-1',
+    utterance_ids: ['utterance-1'],
+    start_ms: 4_000,
+    end_ms: 26_000,
+    face_claims: [faceClaim('ben')],
+  };
+
+  function conflictHarness() {
+    return createHarness({
+      people: [
+        person('ann', 'Ann', { created_at: '2026-01-01T00:00:00.000Z' }),
+        person('ben', 'Ben', { created_at: '2026-02-01T00:00:00.000Z' }),
+      ],
+      voiceprints: [voiceprint('print-ann', 'ann', [1, 0, 0])],
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+  }
+
+  it('names nobody and says so on the bus', async () => {
+    const harness = conflictHarness();
+
+    const result = await harness.service.attributeSpeaker(conflictInput);
+
+    expect(result).toEqual({ status: 'pending', reason: 'ambiguous' });
+    expect(harness.utterances.documents[0].person_id).toBeUndefined();
+    expect(harness.emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'identity_conflict',
+        face_person_id: 'ben',
+        voice_person_id: 'ann',
+        start_ms: 4_000,
+        end_ms: 26_000,
+      }),
+    );
+    expect(harness.emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'identity' }));
+  });
+
+  it('offers the pair to the owner as a merge question, oldest person first', async () => {
+    const harness = conflictHarness();
+    await harness.service.attributeSpeaker(conflictInput);
+
+    const candidates = await harness.service.duplicateCandidates();
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].reason).toBe('face_voice_conflict');
+    expect(candidates[0].sides.map((side) => side.person_id)).toEqual(['ann', 'ben']);
+  });
+});
+
+describe('capture modes that may not mint', () => {
+  /**
+   * A pavement full of strangers is not a conversation. Every passer-by the mic
+   * catches would otherwise become a person who is then kept forever.
+   */
+  it('leaves an unrecognised voice unnamed instead of minting one', async () => {
+    const harness = createHarness({
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    const result = await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: CONFIRMED_SPEECH_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+      allow_mint: false,
+    });
+
+    expect(result).toEqual({ status: 'pending', reason: 'no_match' });
+    expect(harness.people.documents).toEqual([]);
+    expect(harness.voiceprints.documents).toEqual([]);
+  });
+
+  it('marks a minted person as waiting for a name rather than relying on what it is called', async () => {
+    const harness = createHarness({
+      utterances: [utterance('utterance-1', 'conversation-1')],
+    });
+
+    await harness.service.attributeSpeaker({
+      embedding: [0, 1, 0],
+      duration_ms: CONFIRMED_SPEECH_MS,
+      conversation_id: 'conversation-1',
+      utterance_ids: ['utterance-1'],
+    });
+
+    expect(harness.people.documents[0]).toMatchObject({
+      name: UNNAMED_PERSON_NAME,
+      is_unnamed: true,
+    });
+  });
+});
+
+describe('merging people who have faces', () => {
+  it('re-points faceprints and gives the survivor the best face of the pair', async () => {
+    const harness = createHarness({
+      people: [
+        person('person-oldest', 'Oldest record', { created_at: '2026-01-01T00:00:00.000Z' }),
+        person('person-newer', 'Newer record', { created_at: '2026-01-02T00:00:00.000Z' }),
+      ],
+      faceprints: [
+        faceprint('face-oldest', 'person-oldest', { quality: 0.4, thumbnail: 'blurred' }),
+        faceprint('face-newer', 'person-newer', { quality: 0.95, thumbnail: 'sharp' }),
+      ],
+    });
+
+    const survivor = await harness.service.mergePeople({
+      person_ids: ['person-oldest', 'person-newer'],
+    });
+
+    expect(survivor._id).toBe('person-oldest');
+    expect(harness.faceprints.documents.every((print) => print.person_id === 'person-oldest')).toBe(true);
+    expect(harness.people.documents[0].avatar_thumbnail).toBe('sharp');
   });
 });

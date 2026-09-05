@@ -27,10 +27,14 @@ import { cosine } from './matcher'
 export interface DuplicateSide {
   person_id: Id
   name: string
-  /** The print that scored, so the app can play the speech behind it. */
-  voiceprint_id: Id
+  /**
+   * The print that scored, so the app can play the speech behind it. Absent on
+   * a pair raised by a face-versus-voice conflict, where the evidence is not a
+   * print-to-print comparison at all.
+   */
+  voiceprint_id?: Id
   /** Pooled speech behind that print. Thin evidence deserves more suspicion. */
-  duration_ms: number
+  duration_ms?: number
   source_conversation_id?: Id
 }
 
@@ -38,6 +42,13 @@ export interface DuplicateCandidate {
   score: number
   /** Oldest person first — the one `mergePeople` would keep. */
   sides: [DuplicateSide, DuplicateSide]
+  /**
+   * Which evidence raised the pair. 'voice' is two voiceprints scoring as one
+   * speaker; 'face_voice_conflict' is a face and a voice naming different
+   * people over the same breath, which is a stronger hint and still not a
+   * decision. See IdentityConflictEvent.
+   */
+  reason?: 'voice' | 'face_voice_conflict'
 }
 
 export interface DuplicateOptions {
@@ -127,6 +138,7 @@ export function mergeCandidates(
       candidates.push({
         score: best.score,
         sides: survivorFirst ? [leftSide, rightSide] : [rightSide, leftSide],
+        reason: 'voice',
       })
     }
   }
