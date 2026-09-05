@@ -56,6 +56,15 @@ eval/real/*.log
 # all rather than a second line of defence.
 eval/real/*.txt
 
+# Glasses captures and face crops: the same personal data rule as fixtures/real/.
+#
+# A capture off the board is a recording of whoever was in front of the wearer,
+# and a face crop is a biometric identifier for a person who never agreed to
+# appear in a shared repository. fixtures/glasses/synthetic/ is committed
+# because it is drawn rather than recorded; these two are not.
+fixtures/glasses/real/
+fixtures/glasses/enroll/
+
 # A speechbrain savedir that stringified to "None" — downloaded model
 # checkpoints, not source. Regenerated on demand by the sidecar.
 None/
