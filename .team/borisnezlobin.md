@@ -73,6 +73,22 @@ conversation clips — we can never ask someone we just met to record a sample.
   Reanimated, Gesture Handler, and two local Expo modules (hotspot join, Vision
   face landmarks). That means a dev-client rebuild for everyone, not just a
   `bun install`. It will land as its own commit with a line here on the day.
+- **This is the day: the app gained `@shopify/react-native-skia` 2.6.2,
+  `react-native-reanimated` 4.5.1, `react-native-worklets` 0.10.1,
+  `react-native-gesture-handler` 2.32.0, `expo-image` 57.0.4, `expo-font`
+  57.0.3, and the Schibsted Grotesk and Instrument Serif font packages.**
+  `bun install` is not enough — **everyone must rebuild the dev client**:
+  `cd app && npx pod-install && npx expo run:ios --device`. **The client you
+  have installed will crash on the new bundle**, because it has no Skia,
+  Reanimated or Gesture Handler native code in it. `app/babel.config.js` is new
+  and preset-only; `babel-preset-expo@57` registers the worklets plugin itself,
+  so do not add it, and start Metro once with `npx expo start -c` after
+  rebuilding. Root `package.json` gained `trustedDependencies` for
+  `@shopify/react-native-skia` — without it Bun skips the postinstall that
+  downloads the Skia binaries and `pod install` fails. `App.tsx` now loads the
+  new fonts alongside Manrope and Newsreader and wraps the tree in
+  `GestureHandlerRootView`; `expo install` also added the `expo-image` and
+  `expo-font` config plugins to `app/app.json`.
 - `shared/contracts.ts` gained `speaker_pending` and `conversation` events, and
   now `UtteranceEvent.superseded` — the final pass rebuilds the transcript from
   a whole-file transcription and a handful of live lines have no counterpart in
