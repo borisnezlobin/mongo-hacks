@@ -28,13 +28,16 @@ import {
   OWNER_ID,
   SESSION_LINK_THRESHOLD,
   type AmeliaStepEvent,
+  type CaptureMode,
+  type FaceClaim,
+  type Id,
   type IdentityConfidence,
   type SpeakerPendingEvent,
   type Utterance,
   type UtteranceEvent,
 } from '../../shared/contracts'
 import type { AmeliaBus } from '../lib/bus'
-import type { AttributionInput, AttributionResult } from '../identity'
+import type { AttributionInput, AttributionResult, FaceAttributionInput } from '../identity'
 import { audioConfig, type AudioConfig } from './config'
 import { agglomerateByAverageLinkage } from './agglomerate'
 import { diarizeAudio, type SpeakerTurn } from './diarize-sidecar'
@@ -110,6 +113,19 @@ export interface AttributionService {
     conversation_id: string
     clusters: (Omit<AttributionInput, 'conversation_id'> & { session_speaker: string })[]
   }): Promise<Record<string, AttributionResult>>
+  /** Optional for the same reason as attributeSession: doubles rarely need it. */
+  attributeByFace?(input: FaceAttributionInput): Promise<AttributionResult>
+}
+
+/**
+ * What the camera saw, narrowed to the one question this session asks it.
+ *
+ * The face lane knows about tracks, frames, landmarks and thumbnails; none of
+ * that belongs here. A session has a stretch of speech and wants to know who
+ * was in front of the camera while it happened, and this is the whole seam.
+ */
+export interface FaceEvidenceSource {
+  claimsFor(conversationId: Id, spans: { start_ms: number; end_ms: number }[]): FaceClaim[]
 }
 
 export interface SessionOptions {
@@ -131,7 +147,24 @@ export interface SessionOptions {
    * AudioConfig.vocabularyEnabled for why it is off.
    */
   vocabulary?: () => readonly string[] | Promise<readonly string[]>
+  /** The camera, when there is one. Absent is the phone, which behaves as it always has. */
+  faces?: FaceEvidenceSource
+  /** What the capture device thinks it is in. Absent is 'group': keep everything. */
+  captureMode?: CaptureMode
+  /** So the owner's own lines are never dropped by the retention filter. */
+  ownerPersonId?: Id
 }
+
+/**
+ * How much of a cluster's speech a face has to be claiming, and for how long,
+ * before the claim is evidence about that cluster rather than about the room.
+ *
+ * A face that appears over a fifth of somebody's turns is a bystander in frame.
+ * Below a second and a half there is not enough of either signal to say
+ * anything — the same window the active-speaker correlation runs over.
+ */
+const FACE_CLAIM_MIN_OVERLAP = 0.6
+const FACE_CLAIM_MIN_MS = 1_500
 
 interface EmittedUtterance {
   utterance_id: string
@@ -202,7 +235,7 @@ export class AudioSession {
   /** Session speakers resolved to people, and those currently being resolved. */
   private readonly resolved = new Map<
     string,
-    { person_id: string; voiceprint_id: string; identity_confidence: IdentityConfidence }
+    { person_id: string; voiceprint_id?: string; identity_confidence: IdentityConfidence }
   >()
   private readonly resolving = new Set<string>()
   private readonly now: () => Date
@@ -249,6 +282,11 @@ export class AudioSession {
 
   get conversationId(): string {
     return this.options.conversationId
+  }
+
+  /** Absent means the phone with no glasses, which keeps everything it hears. */
+  private get captureMode(): CaptureMode {
+    return this.options.captureMode ?? 'group'
   }
 
   get elapsedMs(): number {
@@ -320,6 +358,9 @@ export class AudioSession {
     await this.consolidateClusters()
     await this.finalize(Number.POSITIVE_INFINITY)
     await this.maybeAttribute()
+    // The final pass applies the same filter on the rebuilt transcript. When
+    // there is no final pass, this is the only chance to apply it at all.
+    if (!this.willRunFinalPass()) await this.retainSpeakersWorthKeeping()
     for (const [subsystem, state] of this.failures) {
       console.error(`${state.count} ${subsystem} failures in ${this.conversationId}: ${state.message}`)
     }
@@ -506,7 +547,7 @@ export class AudioSession {
    */
   private async maybeAttribute(): Promise<void> {
     if (!this.options.identity) return
-    const { embedMinMs, provisionalSpeechMs, confirmedSpeechMs } = this.config
+    const { embedMinMs } = this.config
     this.announcePending()
     for (const speaker of this.buffer.speakersOverFloor(embedMinMs)) {
       // A confirmed identity is done. A provisional one is a guess that more
@@ -520,30 +561,102 @@ export class AudioSession {
       }
       const speechMs = this.buffer.speechMsFor(speaker)
       if (speechMs < (this.nextAttemptMs.get(speaker) ?? embedMinMs)) continue
-      this.nextAttemptMs.set(
-        speaker,
-        speechMs < provisionalSpeechMs
-          ? provisionalSpeechMs
-          : speechMs < confirmedSpeechMs
-            ? confirmedSpeechMs
-            : speechMs + confirmedSpeechMs,
-      )
+      const claims = this.faceClaimsFor(speaker)
+      this.nextAttemptMs.set(speaker, this.nextRungFor(speechMs, confirmedIn(claims) !== undefined))
       this.resolving.add(speaker)
       try {
-        const result = await this.attribute(speaker, this.buffer.audioFor(speaker))
+        const result = await this.attribute(speaker, this.buffer.audioFor(speaker), claims)
         if (result) await this.reEmitFor(speaker)
+      } finally {
+        this.resolving.delete(speaker)
+      }
+    }
+    await this.attributeSubFloorFaces()
+  }
+
+  /**
+   * When to ask about a cluster again.
+   *
+   * The rungs exist because pooled speech used to be re-embedded on every
+   * frame. A cluster a confirmed face is vouching for skips them: the answer at
+   * the embedding floor is already a confirmed one, so re-asking on the voice's
+   * schedule buys nothing and costs a forward pass.
+   */
+  private nextRungFor(speechMs: number, faceBacked: boolean): number {
+    const { provisionalSpeechMs, confirmedSpeechMs } = this.config
+    if (faceBacked) return speechMs + confirmedSpeechMs
+    if (speechMs < provisionalSpeechMs) return provisionalSpeechMs
+    if (speechMs < confirmedSpeechMs) return confirmedSpeechMs
+    return speechMs + confirmedSpeechMs
+  }
+
+  /**
+   * Clusters under the embedding floor that a confirmed face is talking over.
+   *
+   * A "yeah" and a laugh never clear the floor and never will, so the voice
+   * path is right to leave them alone and they used to stay anonymous for the
+   * life of the transcript. The camera has been looking at whoever said them
+   * for several seconds, which is an answer the audio cannot reach.
+   */
+  private async attributeSubFloorFaces(): Promise<void> {
+    const identity = this.options.identity
+    if (!identity?.attributeByFace || !this.options.faces) return
+    for (const speaker of this.buffer.speakersOverFloor(0)) {
+      if (speaker === UNKNOWN_SPEAKER || this.resolved.has(speaker) || this.resolving.has(speaker)) continue
+      if (this.buffer.speechMsFor(speaker) >= this.config.embedMinMs) continue
+      const claim = confirmedIn(this.faceClaimsFor(speaker))
+      if (!claim?.person_id) continue
+      this.resolving.add(speaker)
+      try {
+        await this.attributeByFaceOnly(speaker, claim, claim.person_id)
       } finally {
         this.resolving.delete(speaker)
       }
     }
   }
 
+  private async attributeByFaceOnly(speaker: string, claim: FaceClaim, personId: Id): Promise<void> {
+    const attributeByFace = this.options.identity?.attributeByFace
+    if (!attributeByFace) return
+    try {
+      const result = await attributeByFace({
+        conversation_id: this.options.conversationId,
+        person_id: personId,
+        utterance_ids: this.utteranceIdsFor(speaker),
+        face_score: claim.score,
+        track_id: claim.track_id,
+      })
+      this.recordSuccess('identity')
+      if (this.applyResult(speaker, result)) await this.reEmitFor(speaker)
+    } catch (error) {
+      this.recordFailure('identity', error, `face attribution for ${speaker}`)
+    }
+  }
+
+  /**
+   * What the camera was claiming over one cluster's speech.
+   *
+   * Asked span by span and kept only where a track covers most of the cluster,
+   * because a face that shows up over a fifth of somebody's turns is a
+   * bystander in frame rather than the person talking.
+   */
+  private faceClaimsFor(speaker: string): FaceClaim[] {
+    return this.faceClaimsForSpans(this.buffer.spansFor(speaker))
+  }
+
+  private faceClaimsForSpans(spans: { start_ms: number; end_ms: number }[]): FaceClaim[] {
+    const faces = this.options.faces
+    if (!faces) return []
+    return dominantClaims(spans, (span) => faces.claimsFor(this.options.conversationId, [span]))
+  }
+
   /** Embed pooled speech and ask identity who it is. Records the outcome. */
-  private async attribute(speaker: string, speech: Float32Array): Promise<boolean> {
+  private async attribute(speaker: string, speech: Float32Array, claims: FaceClaim[]): Promise<boolean> {
     if (!this.options.identity) return false
     try {
       const embedding = await embedPcm(speech)
       this.recordEmbedding(embedding.vector)
+      const spans = this.buffer.spansFor(speaker)
       const result = await this.options.identity.attributeSpeaker({
         embedding: embedding.vector,
         session_mean: this.sessionMean,
@@ -551,6 +664,11 @@ export class AudioSession {
         duration_ms: embedding.duration_ms,
         conversation_id: this.options.conversationId,
         utterance_ids: this.utteranceIdsFor(speaker),
+        ...(claims.length > 0 ? { face_claims: claims } : {}),
+        allow_mint: this.captureMode !== 'street',
+        ...(spans.length > 0
+          ? { start_ms: spans[0].start_ms, end_ms: spans[spans.length - 1].end_ms }
+          : {}),
       })
       this.recordSuccess('identity')
       return this.applyResult(speaker, result)
@@ -576,7 +694,7 @@ export class AudioSession {
     this.pendingReason.delete(speaker)
     this.resolved.set(speaker, {
       person_id: result.person_id,
-      voiceprint_id: result.voiceprint_id,
+      ...(result.voiceprint_id ? { voiceprint_id: result.voiceprint_id } : {}),
       identity_confidence: result.identity_confidence,
     })
     return true
@@ -1018,9 +1136,8 @@ export class AudioSession {
       .filter((record) => record.start_ms < coveredToMs)
       .sort((a, b) => a.start_ms - b.start_ms)
 
-    const rebuilt = this.reidentifyLines(
-      lines.filter((line) => line.start_ms < coveredToMs),
-      replaceable,
+    const rebuilt = this.applyRetentionPolicy(
+      this.reidentifyLines(lines.filter((line) => line.start_ms < coveredToMs), replaceable),
     )
 
     // Looked up by id, not by start_ms: the ids were carried across by time
@@ -1096,12 +1213,17 @@ export class AudioSession {
       try {
         const embedding = await embedPcm(audio)
         this.recordEmbedding(embedding.vector)
+        const claims = this.faceClaimsForSpans(spans)
         clusters.push({
           embedding: embedding.vector,
           session_mean: null,
           session_speaker: diarizedSpeaker(speaker),
           duration_ms: embedding.duration_ms,
           utterance_ids: this.utterancesInSpans(spans),
+          ...(claims.length > 0 ? { face_claims: claims } : {}),
+          allow_mint: this.captureMode !== 'street',
+          start_ms: spans[0].start_ms,
+          end_ms: spans[spans.length - 1].end_ms,
         })
       } catch (error) {
         this.recordFailure('embedding', error, `final pass embed for ${speaker}`)
@@ -1185,6 +1307,63 @@ export class AudioSession {
     })
   }
 
+  /**
+   * Whether a cluster's speech is part of this conversation or part of the
+   * street it happened on.
+   *
+   * Resolved by either identifier counts, including a provisional match: the
+   * question is whether this is somebody the owner is with, not how sure we are
+   * of their name. A face that is near and talking counts too, which is what
+   * keeps the other half of a conversation with a stranger.
+   */
+  private isRetained(speaker: string): boolean {
+    if (speaker === UNKNOWN_SPEAKER) return false
+    if (this.resolved.has(speaker)) return true
+    return this.faceClaimsFor(speaker).some((claim) => claim.is_near && claim.speaking)
+  }
+
+  /** The owner's own lines survive whatever their cluster looks like. */
+  private isDroppable(record: EmittedUtterance): boolean {
+    if (record.person_id !== undefined && record.person_id === this.options.ownerPersonId) return false
+    return !this.isRetained(record.session_speaker)
+  }
+
+  /**
+   * Street capture keeps the owner and whoever is demonstrably talking to them,
+   * and drops the rest.
+   *
+   * A pavement is not a conversation: the mic hears every passer-by, and
+   * transcribing strangers who never agreed to any of it is the reason this
+   * filter exists. 'group' and 'gathering' keep everything, which is why this
+   * returns its argument untouched for them.
+   */
+  private applyRetentionPolicy(records: EmittedUtterance[]): EmittedUtterance[] {
+    if (this.captureMode !== 'street') return records
+    return records.filter((record) => !this.isDroppable(record))
+  }
+
+  /**
+   * Apply the filter to the live transcript, superseding what it drops. The
+   * final pass does this as part of rebuilding; this is the path for a session
+   * that ends without one.
+   */
+  private async retainSpeakersWorthKeeping(): Promise<void> {
+    const records = [...this.emitted.values()]
+    const kept = this.applyRetentionPolicy(records)
+    if (kept.length === records.length) return
+    const keptIds = new Set(kept.map((record) => record.utterance_id))
+    this.emitted.clear()
+    for (const record of kept) this.emitted.set(record.start_ms, record)
+    for (const record of records) {
+      if (!keptIds.has(record.utterance_id)) await this.supersede(record)
+    }
+  }
+
+  /** Whether runFinalPass would get as far as rebuilding anything. */
+  private willRunFinalPass(): boolean {
+    return this.config.finalPassEnabled && this.recorder !== null
+  }
+
   /** Take a line out of the transcript, in the store and on every client. */
   private async supersede(record: EmittedUtterance): Promise<void> {
     await this.options.utterances?.deleteOne({ _id: record.utterance_id })
@@ -1199,6 +1378,47 @@ export class AudioSession {
       superseded: true,
     })
   }
+}
+
+/** The confirmed claim among these, if any. See fusion.ts for what that buys. */
+function confirmedIn(claims: readonly FaceClaim[]): FaceClaim | undefined {
+  return claims.find((claim) => claim.confidence === 'confirmed' && claim.person_id !== undefined)
+}
+
+/**
+ * Keep the tracks that were claiming most of this speech, and drop the rest.
+ *
+ * Pure, and asked span by span rather than over the whole set at once, because
+ * "somebody's face appeared somewhere in this cluster" is not evidence about
+ * the cluster — two people in frame while one of them talks would otherwise
+ * both look like the speaker. A track has to cover FACE_CLAIM_MIN_OVERLAP of
+ * the cluster's speech, and at least FACE_CLAIM_MIN_MS of it, to say anything.
+ *
+ * A track that matched nobody is kept. It names no one and the fusion ignores
+ * it, but "somebody near was talking here" is exactly what street-mode
+ * retention needs in order to keep the other half of a conversation.
+ */
+export function dominantClaims(
+  spans: readonly { start_ms: number; end_ms: number }[],
+  claimsForSpan: (span: { start_ms: number; end_ms: number }) => FaceClaim[],
+): FaceClaim[] {
+  const totalMs = spans.reduce((total, span) => total + (span.end_ms - span.start_ms), 0)
+  if (totalMs <= 0) return []
+  const covered = new Map<string, { ms: number; claim: FaceClaim }>()
+  for (const span of spans) {
+    const spanMs = span.end_ms - span.start_ms
+    for (const claim of claimsForSpan(span)) {
+      const seen = covered.get(claim.track_id)
+      // The best-scoring observation of a track represents it, so a frame where
+      // the person half turned away does not decide what the track claimed.
+      const claimToKeep = !seen || claim.score > seen.claim.score ? claim : seen.claim
+      covered.set(claim.track_id, { ms: (seen?.ms ?? 0) + spanMs, claim: claimToKeep })
+    }
+  }
+  return [...covered.values()]
+    .filter((entry) => entry.ms >= FACE_CLAIM_MIN_MS && entry.ms >= totalMs * FACE_CLAIM_MIN_OVERLAP)
+    .sort((left, right) => right.claim.score - left.claim.score)
+    .map((entry) => entry.claim)
 }
 
 /** Cluster ids from the final pass, namespaced away from live cluster ids. */

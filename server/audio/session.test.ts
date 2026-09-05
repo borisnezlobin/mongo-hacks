@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   VOICEPRINT_DIMS,
   type AmeliaEvent,
+  type FaceClaim,
   type IdentityConfidence,
   type UtteranceEvent,
 } from '../../shared/contracts'
 import { AmeliaBus } from '../lib/bus'
-import { AudioSession, type AttributionService } from './session'
+import type { AttributionInput, AttributionResult } from '../identity'
+import { AudioSession, type AttributionService, type FaceEvidenceSource } from './session'
 import type { Segment, StreamProvider, Word } from './types'
 
 /**
@@ -534,5 +536,296 @@ describe('AudioSession run-on turns', () => {
     await session.end()
 
     expect(new Set(session.transcript.map((record) => record.session_speaker)).size).toBe(1)
+  })
+})
+
+/** A camera that claims one person over every span it is asked about. */
+function faceSource(claim: Partial<FaceClaim> & { person_id?: string }): FaceEvidenceSource & { asked: number } {
+  const source = {
+    asked: 0,
+    claimsFor() {
+      source.asked += 1
+      return [
+        {
+          person_id: 'ben',
+          track_id: 'track-1',
+          confidence: 'confirmed' as const,
+          score: 0.66,
+          is_near: true,
+          speaking: true,
+          ...claim,
+        },
+      ]
+    },
+  }
+  return source
+}
+
+function recordingIdentity(result?: AttributionResult) {
+  const inputs: AttributionInput[] = []
+  const faceCalls: { person_id: string; utterance_ids: string[] }[] = []
+  return {
+    inputs,
+    faceCalls,
+    async attributeSpeaker(input: AttributionInput) {
+      inputs.push(input)
+      return (
+        result ?? {
+          status: 'matched' as const,
+          person_id: 'ben',
+          voiceprint_id: 'v-1',
+          confidence: 0.7,
+          identity_confidence: 'confirmed' as const,
+        }
+      )
+    },
+    async attributeByFace(input: { person_id: string; utterance_ids: string[] }) {
+      faceCalls.push(input)
+      return {
+        status: 'matched' as const,
+        person_id: input.person_id,
+        confidence: 0.66,
+        identity_confidence: 'confirmed' as const,
+      }
+    },
+  }
+}
+
+/** One second of speech per turn, `seconds` of it, from one voice. */
+async function speakFor(session: AudioSession, provider: ScriptedProvider, seconds: number): Promise<void> {
+  for (let i = 0; i < seconds; i += 1) {
+    const start = i * 1000
+    provider.segments([{ speaker: `turn-${i}`, start_ms: start, end_ms: start + 1000 }])
+    provider.words([{ text: `word${i}`, start_ms: start + 100, end_ms: start + 900 }])
+    await session.pushAudio(speech(0.5, 1))
+  }
+}
+
+describe('AudioSession face evidence', () => {
+  it('hands identity the face claims over the cluster it is asking about', async () => {
+    const bus = new AmeliaBus()
+    const provider = new ScriptedProvider()
+    const identity = recordingIdentity()
+    const session = new AudioSession({
+      conversationId: 'c-face',
+      bus,
+      provider,
+      identity,
+      utterances: null,
+      recorder: null,
+      faces: faceSource({}),
+    })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(identity.inputs.length).toBeGreaterThan(0)
+    // Asked at the embedding floor rather than at the provisional rung: a
+    // confirmed face is independent evidence, so three seconds is enough.
+    expect(identity.inputs[0].duration_ms).toBeLessThan(8_000)
+    expect(identity.inputs[0].face_claims?.[0]).toMatchObject({ person_id: 'ben', confidence: 'confirmed' })
+    expect(identity.inputs[0].allow_mint).toBe(true)
+  })
+
+  it('ignores a face that only appeared over a fraction of the cluster', async () => {
+    const bus = new AmeliaBus()
+    const provider = new ScriptedProvider()
+    const identity = recordingIdentity()
+    let asked = 0
+    const session = new AudioSession({
+      conversationId: 'c-glimpse',
+      bus,
+      provider,
+      identity,
+      utterances: null,
+      recorder: null,
+      faces: {
+        claimsFor() {
+          asked += 1
+          // Seen over one span out of many: a bystander in frame.
+          return asked === 1
+            ? [{ person_id: 'ben', track_id: 't', confidence: 'confirmed' as const, score: 0.7, is_near: true, speaking: true }]
+            : []
+        },
+      },
+    })
+
+    await speakFor(session, provider, 6)
+    await session.end()
+
+    expect(identity.inputs.every((input) => input.face_claims === undefined)).toBe(true)
+  })
+
+  /**
+   * A "yeah" and a laugh never clear the embedding floor and never will, so the
+   * voice path is right to leave them alone — and they used to stay anonymous
+   * for the life of the transcript.
+   */
+  it('names a sub-floor cluster the camera was looking at', async () => {
+    const bus = new AmeliaBus()
+    const provider = new ScriptedProvider()
+    const identity = recordingIdentity()
+    const session = new AudioSession({
+      conversationId: 'c-subfloor',
+      bus,
+      provider,
+      identity,
+      utterances: null,
+      recorder: null,
+      faces: faceSource({}),
+    })
+
+    provider.segments([{ speaker: 'turn-0', start_ms: 0, end_ms: 2_000 }])
+    provider.words([{ text: 'yeah', start_ms: 100, end_ms: 1_900 }])
+    await session.pushAudio(speech(0.5, 2))
+    await session.end()
+
+    expect(identity.inputs).toHaveLength(0)
+    expect(identity.faceCalls).toHaveLength(1)
+    expect(identity.faceCalls[0].person_id).toBe('ben')
+    expect(session.transcript.every((record) => record.person_id === 'ben')).toBe(true)
+  })
+
+  it('passes the claims through the final pass as well as the live one', async () => {
+    const bus = new AmeliaBus()
+    const provider = new ScriptedProvider()
+    const identity = recordingIdentity()
+    const session = new AudioSession({
+      conversationId: 'c-final-face',
+      bus,
+      provider,
+      identity,
+      utterances: null,
+      recorder: null,
+      faces: faceSource({}),
+    })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+    // Reached directly: the final pass proper needs whisper, pyannote and a
+    // retained WAV, none of which this is about.
+    await (
+      session as unknown as {
+        identifyDiarizedSpeakers(turns: { start_ms: number; end_ms: number; speaker: string }[]): Promise<void>
+      }
+    ).identifyDiarizedSpeakers([{ start_ms: 0, end_ms: 4_000, speaker: 'SPEAKER_00' }])
+
+    const last = identity.inputs[identity.inputs.length - 1]
+    expect(last.face_claims?.[0]).toMatchObject({ person_id: 'ben' })
+  })
+})
+
+describe('AudioSession street-mode retention', () => {
+  function streetSession(options: Partial<ConstructorParameters<typeof AudioSession>[0]> = {}) {
+    const bus = new AmeliaBus()
+    const events: UtteranceEvent[] = []
+    vi.spyOn(bus, 'emit').mockImplementation(((event: AmeliaEvent) => {
+      if (event.type === 'utterance') events.push(event)
+    }) as typeof bus.emit)
+    const provider = new ScriptedProvider()
+    const session = new AudioSession({
+      conversationId: 'c-street',
+      bus,
+      provider,
+      identity: null,
+      utterances: null,
+      recorder: null,
+      captureMode: 'street',
+      ...options,
+    })
+    return { session, provider, events }
+  }
+
+  it('supersedes a cluster nobody could name and no face was talking over', async () => {
+    const { session, provider, events } = streetSession()
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(session.transcript).toHaveLength(0)
+    expect(events.some((event) => event.superseded === true)).toBe(true)
+  })
+
+  it('keeps a stranger the owner is demonstrably talking to', async () => {
+    const { session, provider } = streetSession({ faces: faceSource({ person_id: undefined, is_near: true, speaking: true }) })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(session.transcript.length).toBeGreaterThan(0)
+  })
+
+  it('drops a face that is in frame but not talking to anybody', async () => {
+    const { session, provider } = streetSession({ faces: faceSource({ person_id: undefined, is_near: true, speaking: false }) })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(session.transcript).toHaveLength(0)
+  })
+
+  it('never mints a person for a passer-by', async () => {
+    const identity = recordingIdentity({ status: 'pending', reason: 'no_match' })
+    const { session, provider } = streetSession({ identity })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(identity.inputs.every((input) => input.allow_mint === false)).toBe(true)
+  })
+
+  it('keeps the owner whatever their cluster looks like', async () => {
+    const identity = recordingIdentity({
+      status: 'matched',
+      person_id: 'owner',
+      voiceprint_id: 'v-owner',
+      confidence: 0.9,
+      identity_confidence: 'confirmed',
+    })
+    const { session, provider } = streetSession({ identity, ownerPersonId: 'owner' })
+
+    await speakFor(session, provider, 4)
+    await session.end()
+
+    expect(session.transcript.length).toBeGreaterThan(0)
+  })
+})
+
+describe('AudioSession with no camera', () => {
+  /**
+   * The regression that matters most: a phone with no glasses must produce
+   * exactly the events it produced yesterday. Compared against the same script
+   * run with no face source and no capture mode at all.
+   */
+  it('emits the same events in group mode as it does with no options at all', async () => {
+    const run = async (extra: Partial<ConstructorParameters<typeof AudioSession>[0]>) => {
+      const bus = new AmeliaBus()
+      const events: AmeliaEvent[] = []
+      vi.spyOn(bus, 'emit').mockImplementation(((event: AmeliaEvent) => {
+        events.push(event)
+      }) as typeof bus.emit)
+      const provider = new ScriptedProvider()
+      const session = new AudioSession({
+        conversationId: 'c-parity',
+        bus,
+        provider,
+        identity: collectingIdentity(),
+        utterances: null,
+        recorder: null,
+        ...extra,
+      })
+      await speakFor(session, provider, 5)
+      await session.end()
+      return events.map((event) =>
+        event.type === 'utterance'
+          ? `${event.type}:${event.text}:${event.start_ms}:${event.person_id}:${event.is_final}`
+          : event.type,
+      )
+    }
+
+    const today = await run({})
+    const withMode = await run({ captureMode: 'group' })
+
+    expect(withMode).toEqual(today)
   })
 })
