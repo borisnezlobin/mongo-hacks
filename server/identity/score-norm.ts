@@ -22,6 +22,15 @@
  * Speaker Recognition", Interspeech 2017.
  */
 
+/**
+ * `Calibration` — score to log-odds — lives in shared/contracts.ts now, because
+ * faces are calibrated the same way and the two probabilities get multiplied
+ * together, so both lanes need the shape. Re-exported here so the fitting and
+ * scoring functions below still read as one module.
+ */
+import type { Calibration } from '../../shared/contracts';
+export type { Calibration };
+
 /** Mean and spread of a trial against people it is known not to be. */
 export interface CohortStats {
   readonly mean: number;
@@ -165,13 +174,6 @@ export interface Trial {
   readonly genuine: boolean;
 }
 
-/**
- * Maps a score to log-odds that the trial is genuine: `slope * score + intercept`.
- */
-export interface Calibration {
-  readonly slope: number;
-  readonly intercept: number;
-}
 
 export function calibratedLogOdds(score: number, calibration: Calibration): number {
   return calibration.slope * score + calibration.intercept;
