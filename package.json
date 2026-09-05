@@ -19,6 +19,7 @@
     "eval:attribution": "tsx eval/attribution.mts",
     "eval:speakers": "tsx eval/speakers.mts",
     "eval:diarization": "tsx eval/diarization.mts",
+    "eval:faces": "bun eval/faces.mts",
     "eval:rediarize": "tsx eval/real/rediarize-shifted.mts",
     "eval:name-evidence": "tsx eval/real/find-name-evidence.mts",
     "eval:fixture": "python3 eval/generate-fixture.py",

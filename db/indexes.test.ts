@@ -39,6 +39,30 @@ describe('Atlas index bootstrap', () => {
     expect(dims).toEqual({ voiceprints: VOICEPRINT_DIMS, facts: EMBEDDING_DIMS });
   });
 
+  /**
+   * Faces are the second identifier, and the obvious way to match them — a
+   * fourth vectorSearch index — is the one thing the cluster will not allow.
+   * So they match in process against the live print set, and the only index
+   * they need is the one that narrows to a person. This test exists because
+   * adding the vector index is a natural thing to reach for later, and it would
+   * fail at apply time on a cluster rather than here.
+   */
+  it('declares an ordinary faceprints index and no fourth search index', async () => {
+    const config = await loadConfig();
+    expect(config.searchIndexCap).toBe(3);
+    expect((config.searchIndexes as SearchIndexSpec[]).some((index) => index.collection === 'faceprints')).toBe(false);
+    const faceIndexes = config.collectionIndexes.filter(
+      (index: { collection: string }) => index.collection === 'faceprints',
+    );
+    expect(faceIndexes).toEqual([
+      {
+        collection: 'faceprints',
+        keys: { owner_id: 1, person_id: 1 },
+        options: { name: 'faceprints_by_person' },
+      },
+    ]);
+  });
+
   it('declares the frozen idempotency keys', async () => {
     const config = await loadConfig();
     const unique = config.collectionIndexes.filter((index: { options: { unique?: boolean } }) => index.options.unique);

@@ -99,6 +99,11 @@
       "options": {"name": "voiceprints_by_person"}
     },
     {
+      "collection": "faceprints",
+      "keys": {"owner_id": 1, "person_id": 1},
+      "options": {"name": "faceprints_by_person"}
+    },
+    {
       "collection": "utterances",
       "keys": {"owner_id": 1, "conversation_id": 1, "start_ms": 1},
       "options": {"name": "conversation_timeline"}
