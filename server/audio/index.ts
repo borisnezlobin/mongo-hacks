@@ -22,7 +22,11 @@ const { WebSocketServer } = createRequire(import.meta.url)('ws') as {
 }
 import {
   AUDIO_FRAME_BYTES,
+  AUDIO_FRAME_SAMPLES,
+  OWNER_CHECK_MIN_MS,
   OWNER_ID,
+  type CaptureMode,
+  type OwnerCheckResponse,
   type Person,
   type ServerDependencies,
   type StreamHandshake,
@@ -31,6 +35,7 @@ import {
 import type { AmeliaBus } from '../lib/bus'
 import { getStorage } from '../storage'
 import { createIdentityService, type IdentityService } from '../identity'
+import { faceServiceFor } from '../faces'
 import { embedPcm } from './embed-client'
 import { OpenAIRealtimeProvider } from './openai-realtime-provider'
 import { OpenRouterProvider } from './openrouter-provider'
@@ -145,11 +150,53 @@ export function liveProvider(env: Record<string, string | undefined> = process.e
   })
 }
 
-async function createSession(conversationId: string, bus: AmeliaBus): Promise<AudioSession> {
-  const deps = await audioDeps(bus)
+/** One 100 ms frame is AUDIO_FRAME_SAMPLES, so the uplink runs at ten of them a second. */
+const SAMPLE_RATE_HZ = AUDIO_FRAME_SAMPLES * 10
+
+/**
+ * The uplink's PCM, or the reason it is not.
+ *
+ * Two routes take raw audio bodies in the same wire format and both used to
+ * spell this out; the enrollment one had the only length check and the owner
+ * check would have grown a second copy of it.
+ */
+function float32Body(bytes: Uint8Array): { pcm: Float32Array } | { error: string } {
+  if (bytes.byteLength === 0 || bytes.byteLength % 4 !== 0) {
+    return { error: 'body must be float32 PCM at 16 kHz mono' }
+  }
+  return { pcm: new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 4) }
+}
+
+function durationMs(pcm: Float32Array): number {
+  return Math.round((pcm.length / SAMPLE_RATE_HZ) * 1000)
+}
+
+/**
+ * The face lane, when there is one.
+ *
+ * Never fatal. A phone with no glasses never sends a face observation, and a
+ * server that cannot open the face store must still record and identify by
+ * voice exactly as it always has.
+ */
+async function faceEvidence(deps: ServerDependencies) {
+  try {
+    return await faceServiceFor(deps)
+  } catch (error) {
+    console.warn('[audio] face evidence unavailable; voice identity is unaffected', error)
+    return undefined
+  }
+}
+
+async function createSession(
+  conversationId: string,
+  deps: ServerDependencies,
+  captureMode?: CaptureMode,
+): Promise<AudioSession> {
+  const bus = deps.bus as AmeliaBus
+  const audio = await audioDeps(bus)
   // Sessions wrote utterances but never a conversation document, so GET /conversations
   // only ever returned the seeded ones and recordings were invisible in the app's list.
-  await deps.conversations?.updateOne(
+  await audio.conversations?.updateOne(
     { _id: conversationId },
     {
       $setOnInsert: {
@@ -164,8 +211,11 @@ async function createSession(conversationId: string, bus: AmeliaBus): Promise<Au
     conversationId,
     bus,
     provider: liveProvider(),
-    identity: deps.identity,
-    utterances: deps.utterances,
+    identity: audio.identity,
+    utterances: audio.utterances,
+    faces: await faceEvidence(deps),
+    captureMode,
+    ownerPersonId: OWNER_PERSON_ID,
   })
 }
 
@@ -178,12 +228,9 @@ export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
     if (!name) return context.json({ error: 'name query parameter required' }, 400)
     const { identity } = await audioDeps(deps.bus as AmeliaBus)
     if (!identity) return context.json({ error: 'identity unavailable: MONGODB_URI not set' }, 503)
-    const body = new Uint8Array(await context.req.arrayBuffer())
-    if (body.byteLength === 0 || body.byteLength % 4 !== 0) {
-      return context.json({ error: 'body must be float32 PCM at 16 kHz mono' }, 400)
-    }
-    const pcm = new Float32Array(body.buffer, body.byteOffset, body.byteLength / 4)
-    const embedding = await embedPcm(pcm)
+    const parsed = float32Body(new Uint8Array(await context.req.arrayBuffer()))
+    if ('error' in parsed) return context.json({ error: parsed.error }, 400)
+    const embedding = await embedPcm(parsed.pcm)
     const result = await identity.enroll({
       // owner=1 reuses the seeded owner person instead of creating a new one,
       // so venue enrollment upgrades the wake gate from the fixture voiceprint.
@@ -196,6 +243,38 @@ export function registerAudioRoutes(app: Hono, deps: ServerDependencies): void {
       embedding: embedding.vector,
     })
     return context.json(result, 201)
+  })
+
+  /**
+   * Is this clip the owner talking?
+   *
+   * The glasses ask before they start recording. In street mode the wearer's
+   * own voice is the only thing that may open a conversation, so this is the
+   * gate between a pavement full of strangers and a recording — and it is
+   * asked of pre-roll audio the phone is holding in memory, never of anything
+   * already written down.
+   *
+   * The loose OWNER_AUTH_THRESHOLD, not the strict attribution one: the
+   * question is "is this the owner", not "which of these people is this".
+   */
+  app.post('/audio/owner-check', async (context) => {
+    const parsed = float32Body(new Uint8Array(await context.req.arrayBuffer()))
+    if ('error' in parsed) return context.json({ error: parsed.error }, 400)
+    const duration = durationMs(parsed.pcm)
+    if (duration < OWNER_CHECK_MIN_MS) {
+      return context.json({ error: `need >=${OWNER_CHECK_MIN_MS}ms of speech, got ${duration}ms` }, 422)
+    }
+    const { identity } = await audioDeps(deps.bus as AmeliaBus)
+    if (!identity) return context.json({ error: 'identity unavailable: no storage' }, 503)
+
+    const embedding = await embedPcm(parsed.pcm)
+    const { authorized, confidence } = await identity.isOwnerVoice(embedding.vector, null)
+    const response: OwnerCheckResponse = {
+      owner: authorized,
+      score: confidence,
+      duration_ms: embedding.duration_ms,
+    }
+    return context.json(response)
   })
 }
 
@@ -225,7 +304,7 @@ export function attachAudioStream(server: Server, deps: ServerDependencies): voi
           const hello = JSON.parse(data.toString()) as StreamHandshake
           if (!hello.conversation_id) throw new Error('conversation_id missing')
           enqueue(async () => {
-            session = await createSession(hello.conversation_id, deps.bus as AmeliaBus)
+            session = await createSession(hello.conversation_id, deps, hello.capture_mode)
           })
         } catch (error) {
           socket.close(1002, `bad hello: ${(error as Error).message}`)
