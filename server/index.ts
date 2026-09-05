@@ -7,6 +7,7 @@ import type { DebugUtteranceRequest, ServerDependencies, UtteranceEvent, Voicepr
 import { OWNER_ID } from '../shared/contracts';
 import { registerAmeliaRoutes } from './amelia';
 import { attachAudioStream, registerAudioRoutes } from './audio';
+import { registerFaceRoutes, registerPresence } from './faces';
 import { registerGlassesRoutes, startGlassesServer } from './glasses';
 import { identityServiceFor, registerIdentityRoutes } from './identity';
 import { bearerAuth } from './lib/auth';
@@ -102,6 +103,9 @@ export function createApp() {
 
   registerAudioRoutes(app, deps);
   registerIdentityRoutes(app, deps);
+  // The second identifier. Face observations never reach the bus — see
+  // PresenceEvent for what a per-frame event would do to the replay buffer.
+  registerFaceRoutes(app, deps);
   registerMemoryRoutes(app, deps);
   registerAmeliaRoutes(app, deps, { ownerConfidenceFor });
   registerGlassesRoutes(app, deps);
@@ -111,6 +115,9 @@ export function createApp() {
   // Names overheard in the room are the cheapest way an unnamed voice ever
   // becomes a person. Suggestions only; the tap to confirm is what writes.
   registerNameSuggestions(bus, { ownerSpeaker: OWNER_PERSON_ID });
+  // Who is in the room, debounced. Faces feed this through the face service;
+  // this side is the voice half.
+  registerPresence(bus);
   return { app, deps };
 }
 
