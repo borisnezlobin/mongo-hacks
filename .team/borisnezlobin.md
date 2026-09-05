@@ -767,3 +767,11 @@ The sweep and probe scripts in `eval/real/` still call `joinWordsToSpeakers`
 directly and should keep doing so — they vary `minTurnMs`, `snapMs` and the
 candidate diarization on purpose. They are measuring a question, not reporting
 what the product produces.
+
+### Heads up, 2026-09-05 (streams 6 and 7, wave 2)
+
+- `server/index.ts` gains two registration lines: `registerFaceRoutes(app, deps)` after the identity routes, and `registerPresence(bus)` beside `registerNameSuggestions`. Face observations never touch the bus; only the debounced `presence` event does.
+- The sidecar takes three new deps (`insightface`, `onnxruntime`, `opencv-python-headless`) and downloads buffalo_l into `sidecar/.cache/insightface` on first start. Re-run the install from `sidecar/requirements.txt`; `FACE_MODELS=off` skips the model entirely and keeps every voice endpoint working.
+- `app/src/state/store.tsx` and `app/src/lib/events.ts`: the store gains `glasses` and `presence` slices (`glasses`, `sweep-presence` actions, a 5 s presence sweep that runs only while somebody is in the room, `setApiBaseOverride` persisting the tailnet base), and `EVENT_NAMES` moved out of `events.ts` into the RN-free `app/src/lib/event-names.ts` — it was missing `name_suggestion`, so that flow never fired against a live server, and it now also carries `presence` and `identity_conflict` with a test asserting it covers `AmeliaEvent` exhaustively.
+- `server/audio/session.ts` now takes `faces`, `captureMode`, and `ownerPersonId`; `server/audio/index.ts` passes them from the `/stream` handshake and the face service. `AttributionResult.matched.voiceprint_id` is optional now (a face-only match has no print).
+- `firmware/xiao-glasses/` is the new board firmware (ESP-IDF 5.3.2); the first flash over the old UVC build needs manual download mode, see its README. Nothing is flashed yet.
