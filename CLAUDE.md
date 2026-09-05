@@ -113,4 +113,4 @@ Do not copy this simplified diagram blindly. Regenerate it from current reposito
 - Keep the demo path resilient with fixture replay and manual summon fallbacks.
 - Stop feature work at the integration gate and fix only failures observed in the golden-path rehearsal.
 
-UI work is light-mode only, uses Manrope and Newsreader, Phosphor icons, sentence-case copy, and no emoji. The naming transition and live Amelia trace are the priority interactions.
+UI work follows the shattered-glass design system in `app/src/constants/` (palette chosen from mockups; Schibsted Grotesk with an Instrument Serif italic accent), Phosphor icons, sentence-case copy, no emoji, no all-caps, no letter-spacing changes. The naming transition and live Amelia trace are the priority interactions.
