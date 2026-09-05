@@ -1,0 +1,93 @@
+menu "XIAO glasses"
+
+    config GLASSES_AP_SSID
+        string "SoftAP SSID"
+        default "amelia-glasses"
+        help
+            Must match GLASSES_SSID in shared/contracts.ts. The phone joins this
+            network from the app's "Connect glasses" button.
+
+    config GLASSES_AP_PASSWORD
+        string "SoftAP password (WPA2-PSK, 8 to 63 characters)"
+        default "ameliaglasses"
+
+    config GLASSES_AP_CHANNEL
+        int "SoftAP channel"
+        default 6
+        range 1 13
+        help
+            Fixed rather than auto-selected so the phone reconnects to the same
+            channel every time and nothing scans mid-session.
+
+    config GLASSES_WS_PORT
+        int "WebSocket server port"
+        default 80
+        range 1 65535
+
+    choice GLASSES_CAMERA_XCLK
+        prompt "Camera XCLK frequency"
+        default GLASSES_CAMERA_XCLK_10MHZ
+        help
+            10 MHz by default: this board runs hot enough to burn a finger and
+            the duty cycle here never needs the stock 20 MHz frame rate. Raise
+            it if burst frames arrive too slowly; drop back if frames come out
+            torn, green, or striped.
+
+        config GLASSES_CAMERA_XCLK_20MHZ
+            bool "20 MHz"
+
+        config GLASSES_CAMERA_XCLK_16MHZ
+            bool "16 MHz"
+
+        config GLASSES_CAMERA_XCLK_10MHZ
+            bool "10 MHz"
+    endchoice
+
+    config GLASSES_JPEG_QUALITY
+        int "JPEG quality (0 = best, 63 = worst)"
+        default 12
+        range 4 40
+        help
+            Lower numbers produce larger frames. A VGA frame at 12 is roughly
+            30 KB, which is the number the link budget was drawn against.
+
+    config GLASSES_BURST_FPS
+        int "Burst frame rate (fps)"
+        default 8
+        range 1 15
+        help
+            Matches GLASSES_BURST_FPS in shared/contracts.ts. The phone can
+            lower it at runtime with a set_fps control message.
+
+    config GLASSES_IDLE_POLL_MS
+        int "Idle poll interval (ms)"
+        default 5000
+        range 500 60000
+        help
+            One frame this often while idle and a client is connected, so a
+            familiar face is still noticed without the camera running.
+
+    config GLASSES_SPEECH_HANGOVER_MS
+        int "Camera burst hangover after speech stops (ms)"
+        default 3000
+        range 0 30000
+
+    config GLASSES_VAD_MARGIN_DB
+        int "VAD margin above the noise floor (dB)"
+        default 12
+        range 3 40
+        help
+            A frame counts as voice when its energy is this far above the
+            adaptive noise floor and its zero-crossing rate looks like speech.
+
+    config GLASSES_THERMAL_HALT_C
+        int "Halt the camera at this die temperature (C)"
+        default 80
+        range 50 110
+
+    config GLASSES_THERMAL_RESUME_C
+        int "Resume the camera below this die temperature (C)"
+        default 70
+        range 40 100
+
+endmenu
