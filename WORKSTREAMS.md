@@ -1,6 +1,6 @@
 # Workstreams
 
-Six streams, five people. Nobody owns a directory — anyone can edit anything.
+Seven streams, five people. Nobody owns a directory — anyone can edit anything.
 A driver is just the person thinking about a stream end to end, so two people
 don't independently redesign the same feature.
 
@@ -13,6 +13,8 @@ Put your name next to a stream and mirror it in your `.team/<you>.md`.
 | 3 | Amelia voice + profile tools | tarun-yadgirkar (profile tools half; voice is unclaimed) | `server/amelia/tts.ts`, `server/amelia/tools.ts` |
 | 4 | Loops rework | | `server/loops/`, `app/src/screens/loops.tsx`, `app/src/lib/notifications.ts` |
 | 5 | UI | | `app/src/components/`, `app/src/constants/theme.ts` |
+| 6 | Glasses capture + face/voice identity frontier | borisnezlobin | `firmware/xiao-glasses/`, `server/faces/`, `server/identity/fusion.ts`, `app/glasses/`, `app/modules/` |
+| 7 | App redesign: shattered-glass design system | borisnezlobin | `app/src/constants/`, `app/src/components/`, `app/assets/shards/` |
 
 Notes below are context, not instructions — things worth knowing before you
 start, mostly about where streams touch each other. Build it how you want.
@@ -82,8 +84,59 @@ The shared primitives in `app/src/components/ui.tsx` and
 `app/src/constants/theme.ts` are the thing others build on, so they're more
 useful early than late.
 
-Existing constraints from `CLAUDE.md`: light mode only, Manrope and Newsreader,
-Phosphor icons, sentence-case copy, no emoji.
+Stream 7 replaces the design system under this one, so check there before
+starting anything that touches `theme.ts` or `ui.tsx`.
+
+UI work follows the shattered-glass design system in `app/src/constants/`
+(palette chosen from mockups; Schibsted Grotesk with an Instrument Serif italic
+accent), Phosphor icons, sentence-case copy, no emoji, no all-caps, no
+letter-spacing changes.
+
+## 6. Glasses capture + face/voice identity frontier
+
+Identity has been one identifier — the voice — and one identifier is a single
+point of failure. The glasses add a camera, so it becomes two.
+
+A Seeed XIAO ESP32-S3 on a pair of glasses runs a Wi-Fi softAP; the phone joins
+it and relays the audio into the existing `/stream` contract unchanged. The
+phone detects faces and lip landmarks locally, correlates mouth movement with
+audio energy to pick who is actually talking, and uploads crops; the server
+embeds them and matches them in process, exactly the way voiceprints already
+work.
+
+The rules that matter to everyone else:
+
+- **Nothing changes for a phone with no glasses.** The mic seam swaps sources,
+  never mixes them, and every contract addition is optional.
+- **The two identifiers are independent and either can confirm alone.** A face
+  held over a few frames is as good as a voice held over twenty seconds. When
+  both agree the claim is stronger; when both are confident and disagree, that
+  is a conflict event and a merge question for a human, never an auto-merge.
+- **A confirmed face can teach a voice**, which is how someone recognised
+  across the room gets a voiceprint without ever being asked for a sample.
+- **Idle faces are match-only.** Outside a conversation nothing is minted or
+  stored; the server touches `last_seen_at` and that is all.
+- Presence is a debounced summary, not a stream. The bus replays 4,096 events
+  and drops clients 256 behind, so per-frame face events would evict the
+  transcript.
+
+The app surfaces this as a presence card: avatar, name, and when you last
+talked. Facts stay off it.
+
+## 7. App redesign: shattered-glass design system
+
+Every screen, on a new design system. The motif is glass shards refracting a
+hot red-orange panel, animating on scroll and at the moment an unnamed voice
+gets a name. Skia for the shards, Reanimated for the motion, Blender for the
+source geometry.
+
+The light-mode, Manrope-and-Newsreader rule is retired — see the line above for
+what replaces it. Tokens live in `app/src/constants/` and are RN-free files, so
+tests can import them; `theme.ts` becomes composition over them and keeps a
+`colors` alias until the last screen is converted.
+
+This lands three native modules and needs a dev-client rebuild, so watch the
+Heads up in `.team/borisnezlobin.md` before the next `bun install`.
 
 ---
 

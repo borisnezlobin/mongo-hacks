@@ -1,8 +1,29 @@
 name: borisnezlobin
 status: active
-updated: 2026-08-14T20:20Z
+updated: 2026-09-04T00:00Z
 
 ## Now
+
+**Two streams, both starting now (2026-09-04).**
+
+Stream 6, glasses and the identity frontier. Voice alone has been the weak
+part of this product, so the glasses add a camera and identity becomes two
+independent identifiers instead of one. A XIAO ESP32-S3 on the frames runs a
+softAP, the phone relays its audio into `/stream` unchanged, the phone finds
+faces and lips locally, and the server embeds the crops and matches them in
+process the way voiceprints already match. Either identifier can confirm
+alone; together they multiply; confidently disagreeing is a merge question for
+a human. A confirmed face teaches a voiceprint, which is how somebody
+recognised across the room gets enrolled without ever being asked. Idle faces
+are match-only — outside a conversation nothing is minted or stored. Presence
+lands in the app as a card with a name and when you last talked.
+
+Stream 7, the app redesign, on a shattered-glass system with a red-orange
+accent: Skia shards over a hot panel, Reanimated motion, Blender for the
+geometry. Palette is picked from mockups before any screen is built.
+
+P0 contracts and schema are on main. Firmware, the faces lane, and the app's
+pure modules come next.
 
 Rebuilt the speaker-ID and transcription core. Landed on main.
 
@@ -23,6 +44,35 @@ conversation clips — we can never ask someone we just met to record a sample.
 
 ## Heads up
 
+- **`shared/contracts.ts` grew a face and glasses half (2026-09-04).** All
+  additive, nothing existing changed shape. Two new events on the `AmeliaEvent`
+  union — `presence` and `identity_conflict` — so **any reducer or switch over
+  event types has to accept `presence`** or a person walking into the room
+  falls on the floor. Also `Person.avatar_thumbnail` and `Person.last_seen_at`
+  (denormalised so `GET /people` carries the avatar and no screen needs a
+  second call), `Voiceprint.taught_by`, `StreamHandshake.capture_mode`
+  (optional; absent is today's behaviour), `Faceprint`, `FaceClaim`,
+  `FaceObservationRequest`/`Response`, `OwnerCheckResponse`, `MergeCandidate`,
+  and `Calibration`, which moved out of `server/identity/score-norm.ts` — that
+  file re-exports it, so imports still resolve.
+- New routes in `ApiContract`: `POST /faces/observe`, `POST
+  /audio/owner-check`, and `GET /people/duplicates`, which has existed on the
+  server the whole time and was simply missing from the contract.
+- The firmware-to-phone wire protocol is declared in contracts too
+  (`GLASSES_FRAME_AUDIO`/`JPEG`, `GlassesAudioFrame`, `GlassesJpegFrame`,
+  `GlassesHello`, `GlassesStatus`, `GlassesControl`), because the board and the
+  phone are two languages that have to agree byte for byte and this is the only
+  file both sides read.
+- **`faceprints` collection**, with one ordinary index (`faceprints_by_person`)
+  and deliberately **no search index** — the Atlas allowance of three is spent,
+  so faces match in process. `db/indexes.test.ts` now fails if someone adds a
+  fourth.
+- `package.json` gained `eval:faces`. The face thresholds in contracts are
+  placeholders until it has been run on real crops.
+- **Coming soon and worth bracing for: the app gains native modules** — Skia,
+  Reanimated, Gesture Handler, and two local Expo modules (hotspot join, Vision
+  face landmarks). That means a dev-client rebuild for everyone, not just a
+  `bun install`. It will land as its own commit with a line here on the day.
 - `shared/contracts.ts` gained `speaker_pending` and `conversation` events, and
   now `UtteranceEvent.superseded` — the final pass rebuilds the transcript from
   a whole-file transcription and a handful of live lines have no counterpart in
