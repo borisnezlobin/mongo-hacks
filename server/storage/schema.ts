@@ -19,6 +19,7 @@ export interface CollectionSchema {
 export const COLLECTION_NAMES = [
   'people',
   'voiceprints',
+  'faceprints',
   'conversations',
   'utterances',
   'facts',
@@ -31,6 +32,11 @@ export type CollectionName = (typeof COLLECTION_NAMES)[number];
 export const SCHEMA: CollectionSchema[] = [
   { name: 'people', equalityIndexes: ['owner_id', 'is_owner'] },
   { name: 'voiceprints', equalityIndexes: ['person_id', 'source_conversation_id'] },
+  // Indexed like voiceprints because it is matched like voiceprints: in
+  // process, against the live print set, by cosine. Faces get no Atlas vector
+  // index — the three-index allowance is spent — so narrowing by person is the
+  // whole query plan.
+  { name: 'faceprints', equalityIndexes: ['person_id', 'source_conversation_id'] },
   { name: 'conversations', equalityIndexes: ['owner_id'] },
   {
     name: 'utterances',
