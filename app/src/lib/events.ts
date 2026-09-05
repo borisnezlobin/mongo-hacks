@@ -1,23 +1,11 @@
 import EventSource from 'react-native-sse';
 import type { AmeliaEvent, BusEventName } from '../../../shared/contracts';
 import { FORCE_MOCK, HEALTH_TIMEOUT_MS, MOCK_ENABLED } from './config';
+import { EVENT_NAMES } from './event-names';
 import { discoverApiBase } from './discover';
 import { getApiBase } from './urls';
 import type { ConnectionSource } from '../state/reducer';
 import { startMockStream, type MockStreamOptions } from './mock-sse';
-
-const EVENT_NAMES: BusEventName[] = [
-  'utterance',
-  'identity',
-  'speaker_pending',
-  'conversation',
-  'fact',
-  'promise',
-  'amelia_step',
-  'amelia_audio',
-];
-
-
 
 export interface StreamHandle {
   stop(): void;

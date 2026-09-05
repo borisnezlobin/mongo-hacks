@@ -9,6 +9,7 @@ import {
   type PersonRecord,
 } from './reducer';
 import type { RecordingState } from './recording';
+import type { GlassesState } from './glasses';
 import {
   selectAmeliaTurnsFor,
   selectClosedPromises,
@@ -23,12 +24,16 @@ import {
   selectOpenPromiseCount,
   selectOwedToYou,
   selectOwnerId,
+  selectLastSeenLine,
   selectPeople,
+  selectPresentPeople,
   selectPromisesFor,
   selectSupersededFacts,
   selectUnknownPeople,
   selectYouOwe,
   shallowArrayEqual,
+  type LastSeenLine,
+  type PresentPerson,
 } from './selectors';
 import { useSelector } from './store';
 
@@ -40,6 +45,7 @@ import { useSelector } from './store';
 const selectRecording = (state: AmeliaState) => state.recording;
 const selectConnection = (state: AmeliaState) => state.connection;
 const selectNotices = (state: AmeliaState) => state.notices;
+const selectGlasses = (state: AmeliaState) => state.glasses;
 
 export function useRecordingState(): RecordingState {
   return useSelector(selectRecording);
@@ -198,4 +204,27 @@ export function useConnection() {
 
 export function useNotices(): Notice[] {
   return useSelector(selectNotices, shallowArrayEqual);
+}
+
+/**
+ * Who is in the room. Read with a clock rather than a timestamp so a card
+ * disappears on the sweep, not on the next unrelated store change.
+ */
+export function usePresentPeople(): PresentPerson[] {
+  return useSelector(
+    useCallback((state: AmeliaState) => selectPresentPeople(state, Date.now()), []),
+    (a, b) => shallowArrayEqual(a.map((entry) => entry.presence), b.map((entry) => entry.presence))
+      && shallowArrayEqual(a.map((entry) => entry.person), b.map((entry) => entry.person)),
+  );
+}
+
+export function useLastSeenLine(personId: Id | undefined): LastSeenLine {
+  return useSelector(
+    useCallback((state: AmeliaState) => selectLastSeenLine(state, personId, Date.now()), [personId]),
+    (a, b) => a.kind === b.kind && a.text === b.text,
+  );
+}
+
+export function useGlassesState(): GlassesState {
+  return useSelector(selectGlasses);
 }

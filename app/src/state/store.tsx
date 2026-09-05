@@ -11,6 +11,9 @@ import {
 import type { AmeliaEvent, Conversation, Id, Person, PromiseMemory, Utterance } from '../../../shared/contracts';
 import { SSE_DEBOUNCE_MS } from '../../../shared/contracts';
 import { api, ApiError } from '../lib/api';
+import { saveSettings } from '../lib/settings';
+import { setApiBase } from '../lib/urls';
+import type { GlassesUiEvent } from './glasses';
 import type { RecordingEvent } from './recording';
 import {
   ATTRIBUTION_TIMEOUT_MS,
@@ -104,6 +107,9 @@ export function useActions(): Actions {
   return actions;
 }
 
+/** Fast enough that a card leaves when it should, slow enough to cost nothing. */
+export const PRESENCE_SWEEP_MS = 5_000;
+
 let noticeCounter = 0;
 function noticeId(): string {
   noticeCounter += 1;
@@ -145,6 +151,10 @@ export interface Actions {
   dismissNameSuggestion(voiceId: Id, name: string): void;
   dismissUnknownCard(): void;
   recording(event: RecordingEvent): void;
+  /** Status, frames and decisions from the board, for the chip and the dev sheet. */
+  glasses(event: GlassesUiEvent): void;
+  /** The tailnet address the owner typed. Persisted, so the next launch starts there. */
+  setApiBaseOverride(base: string): void;
   setConnection(source: ConnectionSource): void;
   notify(message: string, tone?: 'error' | 'info'): void;
   dismissNotice(id: string): void;
@@ -276,6 +286,12 @@ function createActions(store: StoreHandle, queue: { events: AmeliaEvent[]; timer
       store.dispatch({ kind: 'dismiss-name-suggestion', voiceId, name }),
     dismissUnknownCard: () => store.dispatch({ kind: 'dismiss-unknown-card' }),
     recording: (event) => store.dispatch({ kind: 'recording', event }),
+    glasses: (event) => store.dispatch({ kind: 'glasses', event }),
+    setApiBaseOverride(base) {
+      const trimmed = base.trim().replace(/\/+$/, '');
+      setApiBase(trimmed);
+      saveSettings({ apiBase: trimmed || undefined });
+    },
     setConnection: (source) => store.dispatch({ kind: 'set-connection', source }),
     notify,
     dismissNotice: (id) => store.dispatch({ kind: 'dismiss-notice', id }),
@@ -320,6 +336,30 @@ export function AmeliaStoreProvider({
       if (pending && !timer) {
         timer = setInterval(() => store.dispatch({ kind: 'expire-attributions', now: Date.now() }), 2_000);
       } else if (!pending && timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    sync();
+    const unsubscribe = store.subscribe(sync);
+    return () => {
+      unsubscribe();
+      if (timer) clearInterval(timer);
+    };
+  }, [store]);
+
+  /**
+   * Presence expires on a clock, so something has to be that clock. The sweep
+   * runs only while somebody is actually in the room — an empty room does not
+   * need a timer waking the store every five seconds for the life of the app.
+   */
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const sync = () => {
+      const present = Object.keys(store.getState().presence).length > 0;
+      if (present && !timer) {
+        timer = setInterval(() => store.dispatch({ kind: 'sweep-presence', now: Date.now() }), PRESENCE_SWEEP_MS);
+      } else if (!present && timer) {
         clearInterval(timer);
         timer = null;
       }

@@ -4,8 +4,12 @@ import type {
   Conversation,
   ConversationSummary,
   DebugUtteranceRequest,
+  FaceObservationRequest,
+  FaceObservationResponse,
   Id,
+  MergeCandidate,
   NamePersonRequest,
+  OwnerCheckResponse,
   Person,
   PromiseMemory,
   Reminder,
@@ -80,4 +84,25 @@ export const api = {
   createReminder: (promiseId: Id, fireAt: string) =>
     post<Reminder>('/reminders', { promise_id: promiseId, fire_at: fireAt }),
   debugUtterance: (body: DebugUtteranceRequest) => post('/debug/utterance', body),
+  duplicates: (limit?: number) =>
+    request<{ candidates: MergeCandidate[] }>(limit ? `/people/duplicates?limit=${limit}` : '/people/duplicates'),
+
+  /**
+   * One face crop, for matching. Without a conversation id this is match-only:
+   * the server may say who it is and touch their last_seen_at, and writes
+   * nothing else. See FaceObservationRequest.
+   */
+  observeFace: (body: FaceObservationRequest) => post<FaceObservationResponse>('/faces/observe', body),
+
+  /**
+   * Is this clip the owner talking. Raw float32 PCM rather than JSON: it is a
+   * few seconds of audio, and base64 in a JSON body would cost a third more on
+   * a cellular uplink for nothing.
+   */
+  ownerCheck: (pcm: Float32Array) =>
+    request<OwnerCheckResponse>('/audio/owner-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength) as ArrayBuffer,
+    }),
 };
