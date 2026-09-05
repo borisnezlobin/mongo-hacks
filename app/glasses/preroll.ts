@@ -11,6 +11,7 @@ import {
   AUDIO_FRAME_SAMPLES,
   PREROLL_MS,
   type GlassesAudioFrame,
+  type Id,
   type GlassesJpegFrame,
 } from '../../shared/contracts';
 import type { FaceTrack } from './face-tracker';
@@ -21,6 +22,8 @@ export const AUDIO_FRAME_MS = AUDIO_FRAME_SAMPLES / 16;
 export interface PrerollFrame {
   frame: GlassesJpegFrame;
   tracks: FaceTrack[];
+  /** Who was talking in this frame, kept so the replay carries the same claim. */
+  active_track_id?: Id;
 }
 
 export interface PrerollContents {
@@ -82,8 +85,8 @@ export class PrerollBuffer {
     this.prune(frame.ts_ms);
   }
 
-  pushFrame(frame: GlassesJpegFrame, tracks: FaceTrack[]): void {
-    this.frames.push({ frame, tracks });
+  pushFrame(frame: GlassesJpegFrame, tracks: FaceTrack[], activeTrackId?: Id): void {
+    this.frames.push({ frame, tracks, active_track_id: activeTrackId });
     this.prune(frame.ts_ms);
   }
 

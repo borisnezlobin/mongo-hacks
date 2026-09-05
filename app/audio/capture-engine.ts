@@ -1,4 +1,4 @@
-import type { Id } from '../../shared/contracts';
+import type { CaptureMode, Id } from '../../shared/contracts';
 import {
   CONNECT_TIMEOUT_MS,
   RECONNECT_MAX_ATTEMPTS,
@@ -26,8 +26,19 @@ export interface SocketHandlers {
   onClose(reason: string): void;
 }
 
+/**
+ * Anything beyond the conversation id that belongs on the /stream handshake.
+ *
+ * Optional throughout: the phone with no glasses sends none of it, and the
+ * server reads a missing capture_mode as 'group' and keeps everything, which
+ * is exactly today's behaviour.
+ */
+export interface HandshakeExtras {
+  capture_mode?: CaptureMode;
+}
+
 export interface CaptureEngineDeps {
-  openSocket(conversationId: Id, handlers: SocketHandlers): CaptureSocket;
+  openSocket(conversationId: Id, handlers: SocketHandlers, extras?: HandshakeExtras): CaptureSocket;
   acquireMicrophone(onSamples: (samples: Float32Array) => void): Promise<void>;
   releaseMicrophone(): void;
   emit(event: RecordingEvent): void;
@@ -53,6 +64,7 @@ export class CaptureEngine {
   private connectTimer: unknown = null;
   private retryTimer: unknown = null;
   private micHeld = false;
+  private handshakeExtras: HandshakeExtras | undefined;
 
   constructor(private readonly deps: CaptureEngineDeps) {}
 
@@ -60,10 +72,13 @@ export class CaptureEngine {
     return this.buffered.length;
   }
 
-  async start(conversationId: Id): Promise<void> {
+  async start(conversationId: Id, handshakeExtras?: HandshakeExtras): Promise<void> {
     this.teardown();
     this.phase = 'connecting';
     this.conversationId = conversationId;
+    // Kept for the life of the session so a reconnect re-declares it; the
+    // server sees a fresh handshake and would otherwise fall back to 'group'.
+    this.handshakeExtras = handshakeExtras;
     this.attempt = 0;
     this.deps.emit({ type: 'start', conversationId });
 
@@ -156,7 +171,7 @@ export class CaptureEngine {
         this.socket = null;
         this.lose('connection-lost', reason);
       },
-    });
+    }, this.handshakeExtras);
     this.socket = socket;
 
     // Without this the button sat disabled on "Connecting" for as long as the socket
@@ -231,6 +246,7 @@ export class CaptureEngine {
     this.packetizer.reset();
     this.buffered = [];
     this.conversationId = null;
+    this.handshakeExtras = undefined;
     this.attempt = 0;
   }
 }

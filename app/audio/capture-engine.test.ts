@@ -9,7 +9,13 @@ import {
   type RecordingEvent,
   type RecordingState,
 } from '../src/state/recording';
-import { CaptureEngine, MAX_BUFFERED_FRAMES, type CaptureSocket, type SocketHandlers } from './capture-engine';
+import {
+  CaptureEngine,
+  MAX_BUFFERED_FRAMES,
+  type CaptureSocket,
+  type HandshakeExtras,
+  type SocketHandlers,
+} from './capture-engine';
 
 /** A clock the test drives by hand, so backoff can be asserted rather than waited out. */
 function createClock() {
@@ -58,7 +64,11 @@ class FakeSocket implements CaptureSocket {
   sent: ArrayBuffer[] = [];
   closed = false;
   failSend = false;
-  constructor(readonly conversationId: string, readonly handlers: SocketHandlers) {}
+  constructor(
+    readonly conversationId: string,
+    readonly handlers: SocketHandlers,
+    readonly extras?: HandshakeExtras,
+  ) {}
   send(frame: ArrayBuffer) {
     if (this.failSend) throw new Error('send failed');
     this.sent.push(frame);
@@ -76,8 +86,8 @@ function harness(options: { acquireError?: Error } = {}): Harness {
   let samples: ((samples: Float32Array) => void) | null = null;
 
   const engine = new CaptureEngine({
-    openSocket(conversationId, handlers) {
-      const socket = new FakeSocket(conversationId, handlers);
+    openSocket(conversationId, handlers, extras) {
+      const socket = new FakeSocket(conversationId, handlers, extras);
       sockets.push(socket);
       return socket;
     },
@@ -246,6 +256,24 @@ describe('capture engine', () => {
       message: 'Recording stopped when Amelia went to the background.',
     });
     expect(h.micHeld()).toBe(false);
+  });
+
+  /** A phone with no glasses declares nothing and the server keeps everything. */
+  it('sends no handshake extras when none were given', async () => {
+    const h = harness();
+    await h.engine.start('c-1');
+    expect(h.sockets[0].extras).toBeUndefined();
+  });
+
+  it('carries the capture mode onto every reconnect of the session', async () => {
+    const h = harness();
+    await h.engine.start('c-1', { capture_mode: 'street' });
+    expect(h.sockets[0].extras).toEqual({ capture_mode: 'street' });
+
+    h.sockets[0].handlers.onOpen();
+    h.sockets[0].handlers.onClose('dropped');
+    h.clock.advance(reconnectDelayMs(1));
+    expect(h.sockets[1].extras).toEqual({ capture_mode: 'street' });
   });
 
   it('starting again abandons the previous session cleanly', async () => {
