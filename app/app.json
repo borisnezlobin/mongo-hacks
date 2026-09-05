@@ -33,7 +33,9 @@
       "expo-image-picker",
       "expo-status-bar",
       "expo-asset",
-      "./plugins/with-no-push-entitlement"
+      "./plugins/with-no-push-entitlement",
+      "expo-image",
+      "expo-font"
     ]
   }
 }

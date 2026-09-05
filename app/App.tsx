@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   Manrope_400Regular,
@@ -10,6 +11,15 @@ import {
   useFonts,
 } from '@expo-google-fonts/manrope';
 import { Newsreader_400Regular, Newsreader_500Medium, Newsreader_600SemiBold } from '@expo-google-fonts/newsreader';
+import {
+  SchibstedGrotesk_400Regular,
+  SchibstedGrotesk_500Medium,
+  SchibstedGrotesk_600SemiBold,
+  SchibstedGrotesk_700Bold,
+  SchibstedGrotesk_800ExtraBold,
+  SchibstedGrotesk_900Black,
+} from '@expo-google-fonts/schibsted-grotesk';
+import { InstrumentSerif_400Regular_Italic } from '@expo-google-fonts/instrument-serif';
 import { useAudioPlayer } from 'expo-audio';
 import { AudioSessionProvider } from './audio/audio-session';
 import { useAudioCapture } from './audio/useAudioCapture';
@@ -37,6 +47,7 @@ import {
 } from './src/state/hooks';
 import { displayName, isUnnamed, type PersonRecord } from './src/state/reducer';
 import { AmeliaStoreProvider, useActions, useStoreHandle } from './src/state/store';
+import { NATIVE_SMOKE_ENABLED, NativeSmoke } from './src/dev/native-smoke';
 import { ConversationScreen } from './src/screens/conversation';
 import { HomeScreen } from './src/screens/home';
 import { LoopsScreen } from './src/screens/loops';
@@ -52,6 +63,13 @@ export default function App() {
     Newsreader_400Regular,
     Newsreader_500Medium,
     Newsreader_600SemiBold,
+    SchibstedGrotesk_400Regular,
+    SchibstedGrotesk_500Medium,
+    SchibstedGrotesk_600SemiBold,
+    SchibstedGrotesk_700Bold,
+    SchibstedGrotesk_800ExtraBold,
+    SchibstedGrotesk_900Black,
+    InstrumentSerif_400Regular_Italic,
   });
 
   // Render on font FAILURE as well as success. Blocking the whole app behind a webfont
@@ -62,15 +80,18 @@ export default function App() {
   if (fontError) console.warn('[amelia] fonts failed, using system type:', fontError);
 
   return (
-    <SafeAreaProvider>
-      <AmeliaStoreProvider>
-        <AudioSessionProvider>
-          <NavigationProvider>
-            <Shell />
-          </NavigationProvider>
-        </AudioSessionProvider>
-      </AmeliaStoreProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={styles.root}>
+      <SafeAreaProvider>
+        <AmeliaStoreProvider>
+          <AudioSessionProvider>
+            <NavigationProvider>
+              <Shell />
+              {NATIVE_SMOKE_ENABLED ? <NativeSmoke /> : null}
+            </NavigationProvider>
+          </AudioSessionProvider>
+        </AmeliaStoreProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 
