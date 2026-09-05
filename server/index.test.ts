@@ -1,6 +1,12 @@
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import type { FaceObservationRequest, FaceObservationResponse } from '../shared/contracts';
+
+/** The one network call the face lane makes. Everything else here is real. */
+const sidecar = vi.hoisted(() => ({ embedFaceJpeg: vi.fn(), detectFacesJpeg: vi.fn(), isNoFace: vi.fn(() => false) }));
+vi.mock('./faces/embed-client', () => sidecar);
+
 import { createApp, isDirectRun } from './index';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -108,5 +114,50 @@ describe('reconnect', () => {
     const body = await firstChunk(await app.request('/events?since=1'));
     expect(body).toContain('u-new');
     expect(body).not.toContain('u-old');
+  });
+});
+
+describe('a face crop arriving from the glasses', () => {
+  const observation = (overrides: Partial<FaceObservationRequest> = {}): FaceObservationRequest => ({
+    frame_ts_ms: 0,
+    frame_seq: 0,
+    track_id: 't1',
+    bbox: { x: 0.1, y: 0.1, width: 0.2, height: 0.3 },
+    is_near: true,
+    is_active_speaker: false,
+    crop_jpeg_base64: Buffer.from('a jpeg, as far as this test is concerned').toString('base64'),
+    ...overrides,
+  });
+
+  const observe = async (body: FaceObservationRequest) => {
+    const { app } = createApp();
+    return app.request('/faces/observe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  };
+
+  it('matches a stranger seen outside a conversation without writing anything down', async () => {
+    const embedding = new Array<number>(512).fill(0);
+    embedding[0] = 1;
+    sidecar.embedFaceJpeg.mockResolvedValue({
+      vector: embedding,
+      det_score: 0.9,
+      bbox: { x: 0, y: 0, width: 10, height: 10 },
+      elapsed_ms: 5,
+    });
+
+    const response = await observe(observation());
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as FaceObservationResponse;
+    expect(body).toMatchObject({ track_id: 't1', decision: 'unknown', confidence: 'pending' });
+  });
+
+  it('refuses an observation with no crop in it', async () => {
+    const response = await observe(observation({ crop_jpeg_base64: '' }));
+
+    expect(response.status).toBe(400);
   });
 });
