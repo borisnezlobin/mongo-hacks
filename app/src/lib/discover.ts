@@ -1,5 +1,19 @@
 import { API_CANDIDATES, HEALTH_TIMEOUT_MS } from './config';
+import { savedApiBase } from './settings';
 import { setApiBase } from './urls';
+
+/**
+ * The address the owner typed goes first.
+ *
+ * Not merely added to the pile: a saved base is a deliberate answer to "where
+ * is the server", and probing it alongside a stale bundled candidate that
+ * happens to answer faster would quietly overrule them.
+ */
+export function candidateBases(): string[] {
+  const saved = savedApiBase();
+  const rest = API_CANDIDATES.filter((candidate) => candidate !== saved);
+  return saved ? [saved, ...rest] : [...rest];
+}
 
 /**
  * Find which candidate address actually answers.
@@ -16,12 +30,16 @@ import { setApiBase } from './urls';
  * banner still tells the truth.
  */
 export async function discoverApiBase(): Promise<string | undefined> {
+  const candidates = candidateBases();
   // Nothing to choose between, and the health probe the app already does on
   // startup will say whether that one address works.
-  if (API_CANDIDATES.length <= 1) return undefined;
+  if (candidates.length <= 1) {
+    if (candidates[0]) setApiBase(candidates[0]);
+    return undefined;
+  }
 
   const found = await Promise.race([
-    ...API_CANDIDATES.map(async (candidate) => {
+    ...candidates.map(async (candidate) => {
       const ok = await probe(candidate);
       // Losing candidates never resolve, so Promise.race settles on the first
       // that is actually reachable rather than the first to finish.

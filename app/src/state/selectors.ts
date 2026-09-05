@@ -1,5 +1,7 @@
 import type { Conversation, Fact, Id, PromiseMemory, Utterance } from '../../../shared/contracts';
+import { formatAgo } from '../lib/format';
 import { liveConversationId } from './recording';
+import type { PresenceRecord } from './presence';
 import {
   displayName,
   isUnnamed,
@@ -174,4 +176,58 @@ export function selectCurrentClaimsByPerson(state: AmeliaState): Record<Id, stri
     (map[fact.person_id] ??= []).push(fact.claim);
   }
   return map;
+}
+
+export interface PresentPerson {
+  presence: PresenceRecord;
+  person?: PersonRecord;
+}
+
+/**
+ * Who is in the room, speakers first.
+ *
+ * Expiry is applied here as well as by the sweep, so a card cannot outlive its
+ * window just because the interval has not fired yet.
+ */
+export function selectPresentPeople(state: AmeliaState, now: number): PresentPerson[] {
+  return Object.values(state.presence)
+    .filter((record) => record.expires_at > now)
+    .sort((a, b) => Number(b.speaking) - Number(a.speaking) || b.expires_at - a.expires_at)
+    .map((record) => ({ presence: record, person: state.people[record.person_id] }));
+}
+
+export type LastSeenKind = 'talked' | 'seen' | 'first';
+
+export interface LastSeenLine {
+  kind: LastSeenKind;
+  text: string;
+}
+
+const GENERATED_TITLE = /^conversation,/i;
+
+function lastConversationWith(state: AmeliaState, personId: Id): Conversation | undefined {
+  return Object.values(state.conversations)
+    .filter((conversation) => conversation.participant_ids.includes(personId))
+    .sort((a, b) => (b.ended_at ?? b.started_at).localeCompare(a.ended_at ?? a.started_at))[0];
+}
+
+/**
+ * The one line on a presence card.
+ *
+ * Three states rather than one blank-when-unknown, because "we have never met"
+ * and "we talked last month" are the two most useful things to know about
+ * someone standing in front of you, and an empty caption says neither. A
+ * conversation the owner or the model actually titled is worth naming; a
+ * generated "Conversation, 4:15 pm" is not.
+ */
+export function selectLastSeenLine(state: AmeliaState, personId: Id | undefined, now: number): LastSeenLine {
+  const person = personId ? state.people[personId] : undefined;
+  const conversation = personId ? lastConversationWith(state, personId) : undefined;
+  if (conversation) {
+    const when = formatAgo(conversation.ended_at ?? conversation.started_at, now);
+    const title = conversation.title && !GENERATED_TITLE.test(conversation.title) ? conversation.title : undefined;
+    return { kind: 'talked', text: title ? `Last talked ${when}, about ${title}` : `Last talked ${when}` };
+  }
+  if (person?.last_seen_at) return { kind: 'seen', text: `Saw them ${formatAgo(person.last_seen_at, now)}` };
+  return { kind: 'first', text: 'First time meeting' };
 }

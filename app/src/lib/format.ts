@@ -57,3 +57,37 @@ export function attributeLabel(attribute: string): string {
   const spaced = attribute.replace(/[_-]+/g, ' ').trim();
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+const WEEK = 7 * DAY;
+const MONTH = 30 * DAY;
+const YEAR = 365 * DAY;
+
+function plural(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * How long ago, in the words a person would use.
+ *
+ * The presence card says "Last talked 3 weeks ago", so this has to round to
+ * something a glance can read. Precision past the largest unit is noise: a
+ * caption reading "24 days and 6 hours ago" tells the owner nothing they were
+ * asking about.
+ */
+export function formatAgo(iso: string | undefined, now: number = Date.now()): string {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return '';
+  const elapsed = now - then;
+  if (elapsed < MINUTE) return 'just now';
+  if (elapsed < HOUR) return plural(Math.floor(elapsed / MINUTE), 'minute');
+  if (elapsed < DAY) return plural(Math.floor(elapsed / HOUR), 'hour');
+  if (elapsed < 2 * DAY) return 'yesterday';
+  if (elapsed < WEEK) return plural(Math.floor(elapsed / DAY), 'day');
+  if (elapsed < MONTH) return plural(Math.floor(elapsed / WEEK), 'week');
+  if (elapsed < YEAR) return plural(Math.floor(elapsed / MONTH), 'month');
+  return plural(Math.floor(elapsed / YEAR), 'year');
+}

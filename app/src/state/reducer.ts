@@ -3,6 +3,7 @@ import type {
   Conversation,
   Fact,
   Id,
+  IdentityConflictEvent,
   NameSuggestionEvent,
   Person,
   PromiseMemory,
@@ -26,6 +27,18 @@ import {
   seedUtterances,
 } from '../lib/seed';
 import { MOCK_ENABLED } from '../lib/config';
+import {
+  glassesReducer,
+  initialGlassesState,
+  type GlassesState,
+  type GlassesUiEvent,
+} from './glasses';
+import {
+  applyPresenceEvent,
+  initialPresenceState,
+  sweepPresence,
+  type PresenceState,
+} from './presence';
 
 export interface PersonRecord extends Person {
   voiceprint_id?: Id;
@@ -145,6 +158,15 @@ export interface AmeliaState {
    * that field, so naming a face dropped its picture.
    */
   avatars: Record<Id, string>;
+  /** Who is in the room, by face or by voice. Expires on its own; see presence.ts. */
+  presence: PresenceState;
+  /**
+   * A face and a voice naming different people in the same breath, keyed by the
+   * pair. Never resolved here: it is a question for the owner, and the only
+   * thing the app does with it is ask.
+   */
+  identityConflicts: Record<string, IdentityConflictEvent>;
+  glasses: GlassesState;
   connection: ConnectionSource;
   notices: Notice[];
   deleted: Record<Id, DeletedConversation>;
@@ -176,6 +198,8 @@ export type Action =
   | { kind: 'upsert-people'; people: Person[] }
   | { kind: 'hydrate-avatars'; avatars: Record<Id, string> }
   | { kind: 'set-connection'; source: ConnectionSource }
+  | { kind: 'sweep-presence'; now: number }
+  | { kind: 'glasses'; event: GlassesUiEvent }
   | { kind: 'notice'; notice: Notice }
   | { kind: 'dismiss-notice'; id: string };
 
@@ -265,6 +289,9 @@ export function createInitialState(withSeed: boolean = MOCK_ENABLED): AmeliaStat
     serverConversations: {},
     promiseWrites: {},
     avatars: {},
+    presence: initialPresenceState,
+    identityConflicts: {},
+    glasses: initialGlassesState,
     connection: 'connecting',
     notices: [],
     deleted: {},
@@ -578,6 +605,15 @@ function applyEvent(state: AmeliaState, event: AmeliaEvent): AmeliaState {
         created_at: previous?.created_at ?? nowIso,
       };
       return { ...state, promises: { ...state.promises, [promise._id]: promise } };
+    }
+
+    case 'presence':
+      return { ...state, presence: applyPresenceEvent(state.presence, event, Date.now()) };
+
+    case 'identity_conflict': {
+      const key = `${event.face_person_id}:${event.voice_person_id}`;
+      if (state.identityConflicts[key]) return state;
+      return { ...state, identityConflicts: { ...state.identityConflicts, [key]: event } };
     }
 
     case 'amelia_step':
@@ -979,7 +1015,10 @@ export function reduce(state: AmeliaState, action: Action): AmeliaState {
           && existing.name === next.name
           && existing.relationship === next.relationship
           && existing.is_owner === next.is_owner
-          && existing.voiceprint_id === next.voiceprint_id) continue;
+          && existing.voiceprint_id === next.voiceprint_id
+          // A new face crop and a fresh sighting are both things a card renders.
+          && existing.avatar_thumbnail === next.avatar_thumbnail
+          && existing.last_seen_at === next.last_seen_at) continue;
         people[incoming._id] = next;
         changed = true;
       }
@@ -1024,6 +1063,17 @@ export function reduce(state: AmeliaState, action: Action): AmeliaState {
 
     case 'set-connection':
       return state.connection === action.source ? state : { ...state, connection: action.source };
+
+    /** Cards for people who left. Returns the same state when nobody has. */
+    case 'sweep-presence': {
+      const presence = sweepPresence(state.presence, action.now);
+      return presence === state.presence ? state : { ...state, presence };
+    }
+
+    case 'glasses': {
+      const glasses = glassesReducer(state.glasses, action.event);
+      return glasses === state.glasses ? state : { ...state, glasses };
+    }
 
     case 'notice': {
       // One notice per message: a failing poll must not stack twenty identical banners.

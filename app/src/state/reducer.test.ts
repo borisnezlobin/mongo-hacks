@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AmeliaEvent } from '../../../shared/contracts';
+import { PRESENCE_TTL_MS } from '../../../shared/contracts';
 import { mockScript, LIVE_CONVERSATION_ID } from '../lib/mock-sse';
 import { UNKNOWN_PERSON_ID } from '../lib/seed';
 import {
@@ -15,8 +16,10 @@ import {
   selectLatestAmeliaTurn,
   selectListedConversations,
   selectLiveConversationId,
+  selectLastSeenLine,
   selectNameSuggestionFor,
   selectOwnerId,
+  selectPresentPeople,
   selectYouOwe,
 } from './selectors';
 
@@ -823,5 +826,142 @@ describe('notices', () => {
     let state = reduce(createInitialState(false), { kind: 'notice', notice: { id: 'a', message: 'Offline', tone: 'error' } });
     state = reduce(state, { kind: 'dismiss-notice', id: 'a' });
     expect(state.notices).toHaveLength(0);
+  });
+});
+
+const presenceEvent = (overrides: Partial<Extract<AmeliaEvent, { type: 'presence' }>> = {}): AmeliaEvent => ({
+  type: 'presence',
+  person_id: 'p-maya',
+  name: 'Maya',
+  confidence: 'confirmed',
+  source: 'face',
+  speaking: false,
+  is_near: true,
+  track_state: 'present',
+  ...overrides,
+});
+
+describe('presence and glasses in the store', () => {
+  it('puts a presence event in the room and sweeps it out again', () => {
+    const state = applyEvents(createInitialState(false), [presenceEvent()]);
+    expect(selectPresentPeople(state, Date.now())).toHaveLength(1);
+
+    const swept = reduce(state, { kind: 'sweep-presence', now: Date.now() + PRESENCE_TTL_MS + 1 });
+    expect(selectPresentPeople(swept, Date.now() + PRESENCE_TTL_MS + 1)).toHaveLength(0);
+  });
+
+  it('sorts whoever is talking to the front', () => {
+    const state = applyEvents(createInitialState(false), [
+      presenceEvent({ person_id: 'p-1', name: 'Ana' }),
+      presenceEvent({ person_id: 'p-2', name: 'Bo', speaking: true }),
+    ]);
+    expect(selectPresentPeople(state, Date.now())[0].presence.name).toBe('Bo');
+  });
+
+  /** A face and a voice disagreeing is a question for the owner, never an answer. */
+  it('records an identity conflict once', () => {
+    const conflict: AmeliaEvent = {
+      type: 'identity_conflict',
+      conversation_id: 'c-1',
+      face_person_id: 'p-face',
+      voice_person_id: 'p-voice',
+      utterance_ids: ['u1'],
+      face_score: 0.7,
+      voice_score: 0.6,
+      start_ms: 0,
+      end_ms: 2_000,
+    };
+    const state = applyEvents(createInitialState(false), [conflict, conflict]);
+    expect(Object.keys(state.identityConflicts)).toHaveLength(1);
+  });
+
+  it('notices a new face thumbnail and a fresh sighting on a person', () => {
+    const base = createInitialState(false);
+    const person = {
+      _id: 'p-1',
+      owner_id: 'owner',
+      name: 'Maya',
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    };
+    const first = reduce(base, { kind: 'upsert-people', people: [person] });
+    const unchanged = reduce(first, { kind: 'upsert-people', people: [person] });
+    expect(unchanged).toBe(first);
+
+    const withFace = reduce(first, {
+      kind: 'upsert-people',
+      people: [{ ...person, avatar_thumbnail: 'jpeg', last_seen_at: '2026-02-02T00:00:00.000Z' }],
+    });
+    expect(withFace).not.toBe(first);
+    expect(withFace.people['p-1'].avatar_thumbnail).toBe('jpeg');
+  });
+
+  it('routes a glasses event into its own slice and nowhere else', () => {
+    const base = createInitialState(false);
+    const state = reduce(base, {
+      kind: 'glasses',
+      event: { type: 'glasses-mode', mode: 'street', pinned: true },
+    });
+    expect(state.glasses.mode).toBe('street');
+    expect(state.people).toBe(base.people);
+  });
+});
+
+describe('what a presence card says', () => {
+  const now = new Date('2026-03-01T12:00:00.000Z').getTime();
+
+  it('says when you last talked, and what about', () => {
+    let state = createInitialState(false);
+    state = reduce(state, {
+      kind: 'upsert-conversations',
+      conversations: [{
+        _id: 'c-1',
+        owner_id: 'owner',
+        started_at: '2026-02-08T10:00:00.000Z',
+        ended_at: '2026-02-08T10:40:00.000Z',
+        title: 'the move',
+        participant_ids: ['p-1'],
+      }],
+    });
+    const line = selectLastSeenLine(state, 'p-1', now);
+    expect(line.kind).toBe('talked');
+    expect(line.text).toBe('Last talked 3 weeks ago, about the move');
+  });
+
+  it('leaves a generated title off the line', () => {
+    let state = createInitialState(false);
+    state = reduce(state, {
+      kind: 'upsert-conversations',
+      conversations: [{
+        _id: 'c-1',
+        owner_id: 'owner',
+        started_at: '2026-02-28T10:00:00.000Z',
+        title: 'Conversation, 10:00 am',
+        participant_ids: ['p-1'],
+      }],
+    });
+    expect(selectLastSeenLine(state, 'p-1', now).text).toBe('Last talked yesterday');
+  });
+
+  it('falls back to when you last saw them', () => {
+    const state = reduce(createInitialState(false), {
+      kind: 'upsert-people',
+      people: [{
+        _id: 'p-1',
+        owner_id: 'owner',
+        name: 'Maya',
+        last_seen_at: '2026-02-28T09:00:00.000Z',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    });
+    const line = selectLastSeenLine(state, 'p-1', now);
+    expect(line.kind).toBe('seen');
+    expect(line.text).toBe('Saw them yesterday');
+  });
+
+  it('says so plainly when you have never met', () => {
+    expect(selectLastSeenLine(createInitialState(false), 'p-nobody', now))
+      .toEqual({ kind: 'first', text: 'First time meeting' });
   });
 });
