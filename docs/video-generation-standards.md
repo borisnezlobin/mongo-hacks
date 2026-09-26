@@ -6,15 +6,16 @@ and social cuts. Drop it into a video project as `CLAUDE.md` (or link to it
 from one). Everything below is a default. When a brief says otherwise, follow
 the brief.
 
-The short version: **write the story first, specify motion in frames, drive
-every pixel from the frame number, ease everything, hold longer than feels
+The short version: **make every choice on purpose, design the frames before
+animating them, write the story first, specify motion in frames, drive every
+pixel from the frame number, ease everything, hold longer than feels
 necessary, and check rendered stills before you render the whole video.**
 
 ---
 
 ## 0. Operating rules for the agent
 
-1. **Storyboard before code.** Every video starts as a beat sheet (section 3)
+1. **Storyboard before code.** Every video starts as a beat sheet (section 4)
    with timecodes in seconds *and* frames. Get it approved before writing any
    composition code.
 2. **One source of truth for style.** Colours, fonts, sizes, spacing, easing
@@ -26,7 +27,7 @@ necessary, and check rendered stills before you render the whole video.**
    `requestAnimationFrame`. Use a seeded PRNG when you need randomness.
 4. **Look at the output.** After each scene, render stills at the key frames
    (entrance, settle, hold, exit) and view them. Before a full render, make a
-   contact sheet (section 12). Never report a scene as done from the code alone.
+   contact sheet (section 13). Never report a scene as done from the code alone.
 5. **Draft cheap, finish once.** Iterate at 720p and half the frame rate if
    needed. Render at the final resolution only after the storyboard, timing
    and stills have been approved.
@@ -39,7 +40,39 @@ necessary, and check rendered stills before you render the whole video.**
 
 ---
 
-## 1. Choose the right engine
+## 1. Brand intent (read this first)
+
+Premium videos don't sell the product so much as give people a way to
+identify with it. For a brand people already know, the job is to make
+existing users feel that choosing it was right. Everything else in this
+document serves that.
+
+- **Intention is everything.** Every choice (font, background, music, colour,
+  transition, sound effect) needs a reason you can state. When the audience
+  can tell that every detail was decided, the video feels premium. When they
+  can't, it feels cheap.
+- **Premium is mostly subtraction.** The usual way to cheapen a video is to add
+  things: stacked effects, extra sound effects, trendy or hype music that
+  doesn't fit the brand. Before adding anything, ask whether it makes the
+  brand feel more or less premium.
+- **Give yourself real rules and reuse them.** For each type of video, fix a
+  brand kit: 3 colours, the same background treatment, one type system, and a
+  music profile (BPM range and genre). Keep to it from video to video.
+  Consistency reads as confidence.
+- **Design first, animate second.** A great video starts as great still
+  frames. Storyboard every key frame (not just a few style frames) in Figma
+  or as rendered stills, and get it approved before animating. Animation
+  can't rescue a weak frame.
+- **One shot, one idea.** Each shot says one thing, and has room to breathe.
+- **The background never competes.** It follows the brand kit and never
+  interrupts the key object.
+
+The brand kit belongs in the tokens file (operating rule 2), so the agent can't
+drift from it.
+
+---
+
+## 2. Choose the right engine
 
 | Need | Use | Why |
 |---|---|---|
@@ -55,7 +88,7 @@ and audio.
 
 ---
 
-## 2. Production pipeline
+## 3. Production pipeline
 
 ```
 brief -> script / VO -> beat sheet -> style frames -> animatic -> animation
@@ -68,16 +101,18 @@ brief -> script / VO -> beat sheet -> style frames -> animatic -> animation
   At about 150 words per minute (2.5 words/s), a 60 s video holds roughly
   140 words of VO. Generate the VO, get word-level timestamps, then lock the
   beat timings to them.
-- **Style frames**: 3 to 5 static stills (hero title, a typical explanation
-  frame, end card) that set the look before any motion. Much cheaper to
-  change than animation.
+- **Storyboard frames**: design every key frame as a static still (Figma or
+  rendered stills) before any motion: hero shot, each feature beat, each
+  transition's start and end state, and the end card. They're much cheaper
+  to change than animation, and they're where most of the quality comes
+  from.
 - **Animatic**: rough blocks moving at the right times, with VO. It catches
   pacing problems before polish.
 - **Stills QA, then a draft render, then the final render.**
 
 ---
 
-## 3. Story and structure
+## 4. Story and structure
 
 ### Principles
 
@@ -123,7 +158,7 @@ example, then a surprising consequence, then recap on one frame.
 
 ---
 
-## 4. Timing and pacing
+## 5. Timing and pacing
 
 ### Frame math
 
@@ -161,14 +196,20 @@ entrances of 0.4 to 0.8 s are normal.
   runs past 10 s needs internal motion, such as a slow push or a highlight.
 - **One hero motion at a time.** Secondary elements hold still, or drift
   slowly, while the hero moves.
-- **Cut on action or on the beat.** Put transitions on a VO pause or on a
-  music downbeat. A cut in the middle of a word feels wrong.
-- **Vary the rhythm.** If every scene is the same length, the video feels
-  robotic. Alternate short and long.
+- **Prefer continuous transitions over hard cuts.** When one scene flows into
+  the next (an object morphs, a match move, a shared element carries over),
+  the viewer accepts that it belongs there. Use a direct cut only when the
+  message needs one, such as a deliberate contrast or a beat drop.
+- **Transitions land on the beat.** Put them on a VO pause or a music
+  downbeat. A change in the middle of a word feels wrong.
+- **Adaptive rhythm.** The pace isn't constant. Speed up through the problem
+  and the feature montage, slow down for the reveal and the key moment, and
+  hold steady for the end card. If every scene is the same length, the video
+  feels robotic.
 
 ---
 
-## 5. Easing and motion quality
+## 6. Easing and motion quality
 
 ### Easing
 
@@ -200,7 +241,9 @@ Pass `durationInFrames` when a spring has to finish by a fixed frame.
 - **Anticipation**: a small wind-up (2 to 4 frames, 3 to 5% the other way)
   before a large move.
 - **Follow-through and overlapping action**: children settle 2 to 4 frames
-  after the parent. Not everything stops on the same frame.
+  after the parent. Not everything stops on the same frame. Overlap the
+  eased curves of consecutive moves (start the next before the previous one
+  has fully settled) so the motion flows instead of stepping.
 - **Squash and stretch** on impacts and fast launches, with volume preserved
   (`scaleX × scaleY ≈ 1`).
 - **Arcs**: organic objects travel along curves, not straight lines.
@@ -224,7 +267,7 @@ Pass `durationInFrames` when a spring has to finish by a fixed frame.
 
 ---
 
-## 6. Composition and layout
+## 7. Composition and layout
 
 - **Safe areas**: action-safe is the inner 93%, title-safe the inner 90% of
   the frame. For 9:16 social, keep critical content out of the top ~220 px
@@ -236,16 +279,18 @@ Pass `durationInFrames` when a spring has to finish by a fixed frame.
   colour, motion and isolation, one of them at a time.
 - **Negative space is a feature.** Fill no more than about 60% of the frame
   with content.
-- **Use a grid**: 12 columns for 16:9, 4 to 6 for 9:16. Align edges; don't
-  centre everything by default. Left-aligned text reads faster than centred
-  text beyond one line.
+- **Key objects go in the centre.** In product and brand shots, the hero
+  object sits centred in the frame, with space around it.
+- **Use a grid for everything else**: 12 columns for 16:9, 4 to 6 for 9:16.
+  Supporting text and diagrams align to it. Left-aligned text reads faster
+  than centred text beyond one line.
 - **Depth**: 2 to 3 layers (background, content, foreground accent). Use
   subtle parallax (background moves at 0.3 to 0.5 times the foreground speed)
   for camera moves.
 
 ---
 
-## 7. Typography
+## 8. Typography
 
 - **At most 2 families.** One sans for most text, plus an optional accent
   (serif italic or mono for code and numbers). Use weight for hierarchy, not
@@ -274,7 +319,7 @@ Pass `durationInFrames` when a spring has to finish by a fixed frame.
 
 ---
 
-## 8. Colour
+## 9. Colour
 
 - **Palette**: one background, one primary foreground, one or two accents,
   and one or two neutrals. Accents cover no more than about 10% of the frame.
@@ -291,7 +336,7 @@ Pass `durationInFrames` when a spring has to finish by a fixed frame.
 
 ---
 
-## 9. Physics and science visualisation
+## 10. Physics and science visualisation
 
 - **Compute, don't fake.** Positions come from the physics, evaluated at
   `t = (frame / fps) × timeScale`. Use closed-form solutions when they exist.
@@ -345,16 +390,29 @@ Deliverables: beat sheet first; then stills at the key frames of each beat; then
 
 ---
 
-## 10. Audio
+## 11. Audio
 
 - **VO drives timing.** Lock beats to VO word timestamps. Visual changes land
   0 to 4 frames before the word that names them.
-- **Music**: pick for tempo. Cuts on beats of a 100 to 120 BPM track (one beat
-  every 15 to 18 frames at 30 fps) feel natural. Duck music by 12 to 18 dB
+- **Music sets the energy, so choose the BPM first**, then the genre for the
+  audience:
+
+  | BPM | Feel | Fits |
+  |---|---|---|
+  | 60–80 | Regal, cinematic, heritage | Luxury, brand films, emotional reveals |
+  | 90–110 | Smooth, cool, effortless | Most premium product videos |
+  | 115–123 | Elite, kinetic, sophisticated | Feature montages, fintech, launches |
+  | 124+ | Drive, hype | Sports, betting, gaming. Can wreck a premium brand |
+
+  At 30 fps, one beat lasts `1800 / BPM` frames (for example 18 f at 100 BPM,
+  15 f at 120 BPM). Snap cuts and key moves to beats. Duck music by 12 to 18 dB
   under VO, with 150 to 300 ms attack and release.
 - **SFX**: subtle whooshes on big moves, ticks on counters, a soft impact on
   landings. Each sound effect matches a visual event to the frame. Lower their
   volume and use fewer than feels natural.
+- **Subtractive sound pass.** When sound design is done, listen to the whole
+  video and ask what feels off. Remove any effect that is too loud, out of
+  place, or doesn't help people stay engaged or understand the product.
 - **Loudness targets**: about −14 LUFS integrated for YouTube and social,
   −16 LUFS for web embeds, true peak no higher than −1 dBTP. Measure with
   `ffmpeg -af loudnorm=print_format=summary` or ebur128.
@@ -363,7 +421,7 @@ Deliverables: beat sheet first; then stills at the key frames of each beat; then
 
 ---
 
-## 11. Captions and on-screen text
+## 12. Captions and on-screen text
 
 - **Burn captions in for social** (most viewers watch muted). On YouTube,
   deliver an `.srt` too.
@@ -376,7 +434,7 @@ Deliverables: beat sheet first; then stills at the key frames of each beat; then
 
 ---
 
-## 12. Technical rendering standards
+## 13. Technical rendering standards
 
 ### Remotion
 
@@ -437,7 +495,7 @@ dimensions, AAC 320 kbps at 48 kHz.
 
 ---
 
-## 13. Prompting Claude for video
+## 14. Prompting Claude for video
 
 **Brief template** (paste and fill in):
 
@@ -446,10 +504,10 @@ Video: <what it is> for <audience>, on <platform>.
 Format: <W×H>, <fps>, <duration>s. Engine: <Remotion|HyperFrames|Manim>.
 One takeaway: "<sentence>".
 Tone / references: <2–3 adjectives>, <reference links or images>.
-Tokens: <path to theme file or hex + fonts>.
+Brand kit: <3 colours, background, fonts, music BPM range + genre> or <path to tokens file>.
 Must show: <facts, numbers, UI, logo>.  Must avoid: <...>.
 Audio: <VO script or "write one">, <music mood/BPM>, captions <burned|srt|none>.
-Process: beat sheet first → wait for approval → style frames → animate scene by scene
+Process: beat sheet first → wait for approval → storyboard every key frame → animate scene by scene
          with key-frame stills → 720p draft → final.
 ```
 
@@ -473,19 +531,25 @@ Process: beat sheet first → wait for approval → style frames → animate sce
 
 ---
 
-## 14. Anti-patterns (tells of low-effort motion)
+## 15. Anti-patterns (tells of low-effort motion)
 
 - Every element fading and sliding up by the same 20 px with the same timing.
 - Linear easing, or everything on the same default ease.
 - Everything bouncing. Bounce is seasoning.
 - Text on screen too briefly to read, or animating while the viewer reads it.
-- Everything centred, nothing aligned to a grid.
+- Supporting text centred by default with nothing on a grid (the hero object
+  is the exception).
 - More than 2 typefaces, all-caps paragraphs, tight tracking on body text.
 - Glows, gradients and glassmorphism on every surface. Neon on black by
   default.
 - Too much happening at once: several hero motions compete.
 - Logo first. The hook comes first, and the logo belongs at the reveal or the
   end card.
+- Hard cuts between every scene where a continuous transition would carry the
+  viewer.
+- Stacked effects, off-brand hype music, or sound effects that exist because
+  they were available.
+- Choices nobody can explain: a font, colour or sound picked by default.
 - Transitions for their own sake (spins, flips, glitch wipes) that carry no
   meaning.
 - Physics that looks wrong (constant speed on a falling object, a parabola
@@ -494,8 +558,10 @@ Process: beat sheet first → wait for approval → style frames → animate sce
 
 ---
 
-## 15. Pre-ship checklist
+## 16. Pre-ship checklist
 
+- [ ] Every font, colour, background, track and sound effect has a stated reason and fits the brand kit.
+- [ ] Every key frame was designed as a still before being animated.
 - [ ] Beat sheet matches the final cut. The single takeaway is stated and shown.
 - [ ] Hook lands in the first 2 to 3 s without sound.
 - [ ] Every text block meets the reading-time rule and sits inside the safe areas.
@@ -504,13 +570,14 @@ Process: beat sheet first → wait for approval → style frames → animate sce
 - [ ] Colour meanings are consistent across scenes.
 - [ ] Physics and numbers are unit-tested, and time scaling is labelled.
 - [ ] The render is deterministic (two renders produce identical frames at spot checks).
+- [ ] A subtractive sound pass is done: nothing too loud, out of place, or without a job.
 - [ ] Audio is at −14 LUFS (or the platform's target), with peaks no higher than −1 dBTP and no clipping or hard cuts.
 - [ ] Contact sheet reviewed. The first and last frames are clean (the poster frame matters).
 - [ ] The file meets the platform spec (resolution, fps, codec, faststart).
 
 ---
 
-## 16. Lessons log
+## 17. Lessons log
 
 Append dated, one-line lessons from real projects. Promote recurring ones
 into the sections above.
@@ -519,11 +586,14 @@ into the sections above.
   UX motion research (NN/g, Material), and 3Blue1Brown/Manim explainer practice.
 - TODO: Add specific lessons from the earlier physics launch video prompt
   (not available in this session).
-- TODO: Add key points from @leomeethewoo's post
-  (x.com/leomeethewoo/status/2103529310208606701). It couldn't be fetched
-  from the build environment.
+- 2026-09-26: Added premium-brand frameworks from Leo's article: brand
+  intent, design-first storyboarding, centred hero objects, continuous
+  transitions, adaptive rhythm, BPM-to-feel table, and the subtractive sound
+  pass.
 
 ## Sources
+
+- Leo (@leomeethewoo), on premium product video frameworks: https://x.com/leomeethewoo/status/2103529310208606701
 
 - Remotion agent skills: https://github.com/remotion-dev/skills
 - Claude + Remotion motion graphics guide: https://github.com/ThamJiaHe/claude-code-handbook/blob/main/docs/motion-graphics-claude-remotion-guide.md
